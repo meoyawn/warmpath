@@ -1,0 +1,20 @@
+[project]
+name = "linkedin-connections"
+version = "0.1.0"
+description = "Local LinkedIn visible-connections scraper."
+requires-python = ">=3.10"
+dependencies = [
+    "open-linkedin-api>=2.3.1",
+]
+
+[dependency-groups]
+dev = [
+    "pyright>=1.1.402",
+]
+
+[project.scripts]
+linkedin-connections = "linkedin_connections.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

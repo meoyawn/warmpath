@@ -1,0 +1,9 @@
+version: 3
+
+env:
+  UV_CACHE_DIR: .uv-cache
+
+tasks:
+  typecheck:
+    desc: Type-check Python with Pyright.
+    cmd: uv run pyright linkedin_connections
