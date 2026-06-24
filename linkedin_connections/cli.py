@@ -110,19 +110,31 @@ def profile_urn_id(api: Any, public_id: str) -> str:
 
 
 def profile_urn_id_from_html(api: Any, public_id: str) -> str | None:
-    res = api.client.session.get(f"https://www.linkedin.com/in/{public_id}/")
-    if res.status_code != 200:
-        return None
-
-    text = unquote(res.text)
     patterns = [
-        r"urn:li:fsd_profile:([A-Za-z0-9_-]+)",
-        r"ref([A-Za-z0-9_-]+)Topcard",
+        re.compile(r"urn:li:fsd_profile:([A-Za-z0-9_-]+)"),
+        re.compile(r"ref([A-Za-z0-9_-]+)Topcard"),
     ]
-    for pattern in patterns:
-        match = re.search(pattern, text)
-        if match:
-            return match.group(1)
+
+    with api.client.session.get(
+        f"https://www.linkedin.com/in/{public_id}/", stream=True
+    ) as res:
+        if res.status_code != 200:
+            return None
+
+        text = ""
+        for chunk in res.iter_content(chunk_size=8192, decode_unicode=True):
+            if not chunk:
+                continue
+
+            if isinstance(chunk, bytes):
+                chunk = chunk.decode(res.encoding or "utf-8", errors="ignore")
+
+            text = (text + chunk)[-40000:]
+            decoded = unquote(text)
+            for pattern in patterns:
+                match = pattern.search(decoded)
+                if match:
+                    return match.group(1)
 
     return None
 
