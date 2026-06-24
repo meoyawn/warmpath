@@ -5,5 +5,16 @@ env:
 
 tasks:
   typecheck:
+    run: once
     desc: Type-check Python with Pyright.
-    cmd: uv run pyright linkedin_connections
+    cmd: uv run python -m pyright warmpath
+
+  test:
+    run: once
+    desc: Run Python unit and live integration tests.
+    cmd: uv run pytest
+
+  check:
+    deps:
+      - typecheck
+      - test

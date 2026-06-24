@@ -22,44 +22,70 @@ Required cookies: `li_at`, `JSESSIONID`.
 Run from this directory:
 
 ```sh
-uv run linkedin-connections --profile mitchellh --limit 50
+uv run warmpath connections mitchellh --limit 50
 ```
 
 Each fetched profile URL is printed to stdout, one URL per line.
 
-### Human Mode
+### Connections
 
 Use your exported browser cookies to fetch connections as the logged-in LinkedIn user:
 
 ```sh
-uv run linkedin-connections --profile mitchellh --limit 50
+uv run warmpath connections mitchellh --limit 50
 ```
 
 Write CSV:
 
 ```sh
-uv run linkedin-connections --profile mitchellh --limit 50 --csv-out mitchellh_connections_50.csv
+uv run warmpath connections mitchellh --limit 50 --csv-out mitchellh_connections_50.csv
 ```
 
 Write both formats:
 
 ```sh
-uv run linkedin-connections --profile mitchellh --limit 50 --json-out mitchellh_connections_50.json --csv-out mitchellh_connections_50.csv
+uv run warmpath connections mitchellh --limit 50 --json-out mitchellh_connections_50.json --csv-out mitchellh_connections_50.csv
+```
+
+### Company Paths
+
+Find people at a target company who are reachable through your network:
+
+```sh
+uv run warmpath company-path https://www.linkedin.com/company/ozon-tech
+uv run warmpath company-path "Ozon Tech"
+```
+
+By default this searches up to second degree:
+
+- direct: `you -> employee`
+- second-degree candidate: `you -> unknown introducer -> employee`
+
+Second-degree paths are marked unresolved when LinkedIn search confirms the person is second-degree but does not return the exact introducer.
+
+Useful options:
+
+```sh
+uv run warmpath company-path https://www.linkedin.com/company/ozon-tech --max-degree 2 --limit 25 --json-out ozon_paths.json
 ```
 
 ## Required Arguments
 
-- `--profile`: LinkedIn `/in/` URL or public slug, for example `mitchellh`.
+- `connections profile`: LinkedIn `/in/` URL or public slug, for example `mitchellh`.
+- `company-path company`: LinkedIn `/company/` URL or company name.
 
 ## Useful Options
 
 - `--limit 50`: number of profiles to fetch. Default: `50`.
 - `--cookie-file cookies/linkedin.cookies`: override cookie file path.
+- `company-path --max-degree 2`: maximum reachable degree to search. Default: `2`.
+- `company-path --cache-dir .linkedin-cache`: cache LinkedIn search results.
+- `company-path --refresh-cache`: bypass cache and fetch fresh results.
 - `--help`: show examples and all flags.
 
 ## Output
 
-Stdout contains one canonical LinkedIn profile URL per line.
+For `connections`, stdout contains one canonical LinkedIn profile URL per line.
 
 JSON and CSV rows contain:
 
@@ -69,6 +95,8 @@ JSON and CSV rows contain:
 - `jobtitle`
 - `location`
 - `urn_id`
+
+For `company-path`, stdout is human-readable. `--json-out` writes structured company, query, summary, and candidate data.
 
 ## Notes
 

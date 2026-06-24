@@ -10,3 +10,4 @@ cookies/*
 *_connections_*.json
 
 .code-review-graph/
+.linkedin-cache/
