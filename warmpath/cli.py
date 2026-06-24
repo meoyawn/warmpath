@@ -1112,21 +1112,33 @@ def render_company_path_result(result: dict[str, Any]) -> str:
     return "\n".join(lines).rstrip()
 
 
-def render_human_mutual(row: dict[str, Any]) -> str | None:
+def render_human_mutual(row: dict[str, Any], name_width: int | None = None) -> str | None:
     name = row.get("name")
     if not isinstance(name, str) or not name:
         return None
 
     url = row.get("url")
     if isinstance(url, str) and url:
-        return f"{name}\t{url}"
+        if name_width is not None:
+            return f"{name:<{name_width}}{url}"
+        return f"{name}  {url}"
     return name
 
 
 def render_human_mutuals(rows: list[dict[str, Any]]) -> list[str]:
+    names_with_urls = [
+        row["name"]
+        for row in rows
+        if isinstance(row.get("name"), str)
+        and row.get("name")
+        and isinstance(row.get("url"), str)
+        and row.get("url")
+    ]
+    name_width = max((len(name) for name in names_with_urls), default=0) + 2
+
     rendered_rows = []
     for row in rows:
-        rendered = render_human_mutual(row)
+        rendered = render_human_mutual(row, name_width if names_with_urls else None)
         if rendered:
             rendered_rows.append(rendered)
     return rendered_rows

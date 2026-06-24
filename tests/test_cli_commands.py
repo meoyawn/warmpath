@@ -196,8 +196,8 @@ def test_human_second_degree_profile_prints_mutuals_heading(
 
     assert capsys.readouterr().out.splitlines() == [
         "Mutuals:",
-        "Anastasiia Krivobokova\thttps://www.linkedin.com/in/anastasiaandreewnaa/",
-        "Andrey Zhuchkov\thttps://www.linkedin.com/in/a-zhuchkov/",
+        "Anastasiia Krivobokova  https://www.linkedin.com/in/anastasiaandreewnaa/",
+        "Andrey Zhuchkov         https://www.linkedin.com/in/a-zhuchkov/",
     ]
 
 
