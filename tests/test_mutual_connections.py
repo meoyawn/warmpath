@@ -76,11 +76,11 @@ def test_second_degree_candidate_renders_visible_mutual_connections() -> None:
 
     rendered = render_company_path_result(result)
 
-    assert (
-        "Path: you -> Anastasiia Krivobokova / Andrey Zhuchkov -> "
-        "Ruslan Gilemzianov"
-    ) in rendered
     assert "Mutuals (2): Anastasiia Krivobokova, Andrey Zhuchkov" in rendered
+    assert "Path:" not in rendered
+    assert "Status:" not in rendered
+    assert "Company URN:" not in rendered
+    assert "URN:" not in rendered
     assert "unknown introducer" not in rendered
 
 
@@ -152,5 +152,8 @@ def test_second_degree_candidate_without_mutuals_keeps_unresolved_status() -> No
 
     rendered = render_company_path_result(result)
 
-    assert "Path: you -> unknown introducer -> Ruslan Gilemzianov" in rendered
-    assert "exact introducer unresolved" in rendered
+    assert "Ruslan Gilemzianov" in rendered
+    assert "Path:" not in rendered
+    assert "Status:" not in rendered
+    assert "URN:" not in rendered
+    assert "unknown introducer" not in rendered

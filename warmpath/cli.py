@@ -1,5 +1,4 @@
 import argparse
-import csv
 import hashlib
 import http.cookiejar
 import json
@@ -22,7 +21,7 @@ COMPANY_URN_RE = re.compile(
 )
 
 NETWORK_DEPTH_BY_DEGREE = {1: "F", 2: "S"}
-DEFAULT_COMPANY_PATH_LIMIT = 25
+DEFAULT_COMPANY_PATH_LIMIT = 5
 DEFAULT_CACHE_DIR = Path(".linkedin-cache")
 DEFAULT_MAX_MUTUAL_CONNECTIONS = 50
 MUTUAL_CONNECTION_TEXT_RE = re.compile(r"\bmutual connections?\b", re.IGNORECASE)
@@ -31,6 +30,13 @@ OTHER_MUTUALS_RE = re.compile(
     re.IGNORECASE,
 )
 MUTUAL_COUNT_RE = re.compile(r"\b(\d+)\s+mutual connections?\b", re.IGNORECASE)
+PROFILE_NETWORK_DISTANCE_KEYS = {
+    "connectiondistance",
+    "degree",
+    "distance",
+    "memberdistance",
+    "networkdistance",
+}
 
 
 def fail(message: str, exit_code: int = 1) -> NoReturn:
@@ -197,6 +203,16 @@ def canonical_profile_url(value: str) -> str | None:
     return f"https://www.linkedin.com/in/{match.group(1)}/"
 
 
+def canonical_profile_public_id(value: str) -> str | None:
+    url = canonical_profile_url(value)
+    if not url:
+        return None
+    match = PROFILE_URL_RE.search(urlparse(url).path)
+    if not match:
+        return None
+    return match.group(1)
+
+
 def profile_url_from_result(result: dict[str, Any]) -> str | None:
     preferred_keys = ("navigationUrl", "profileUrl", "targetUrl", "url")
     for key in preferred_keys:
@@ -329,45 +345,6 @@ def connection_result_row(result: dict[str, Any]) -> dict[str, Any]:
         row["mutuals_truncated"] = mutuals_truncated
 
     return row
-
-
-def fetch_connection_rows(api, urn_id: str, limit: int) -> list[dict[str, Any]]:
-    params = {
-        "filters": (
-            "List((key:resultType,value:List(PEOPLE)),"
-            f"(key:connectionOf,value:List({urn_id})))"
-        )
-    }
-    rows: list[dict[str, Any]] = []
-    seen_urls: set[str] = set()
-    offset = 0
-
-    while len(rows) < limit:
-        remaining = limit - len(rows)
-        batch_limit = min(49, max(2, remaining + 10))
-        results = api.search(params, limit=batch_limit, offset=offset)
-        if not results:
-            break
-
-        offset += len(results)
-        for result in results:
-            row = connection_result_row(result)
-            url = row["url"]
-            if not url or url in seen_urls:
-                continue
-
-            seen_urls.add(url)
-            rows.append(row)
-            if len(rows) == limit:
-                break
-
-        if len(results) < batch_limit:
-            break
-
-    if len(rows) < limit:
-        fail(f"Only found {len(rows)} profile URL(s), expected {limit}.")
-
-    return rows
 
 
 def cache_file_path(cache_dir: Path, namespace: str, key: dict[str, Any]) -> Path:
@@ -721,6 +698,156 @@ def fetch_mutual_connection_rows(
     return [connection_result_row(row) for row in rows if isinstance(row, dict)]
 
 
+def normalize_profile_network_distance(value: str) -> str | None:
+    token = re.sub(r"[^A-Za-z0-9]+", "_", value).strip("_").upper()
+    if token in {"DISTANCE_1", "DEGREE_1", "FIRST", "FIRST_DEGREE", "F"}:
+        return "direct"
+    if token in {"DISTANCE_2", "DEGREE_2", "SECOND", "SECOND_DEGREE", "S"}:
+        return "second"
+    if token in {
+        "DISTANCE_3",
+        "DEGREE_3",
+        "OUT",
+        "OUT_OF_NETWORK",
+        "THIRD",
+        "THIRD_DEGREE",
+        "O",
+    }:
+        return "out"
+    if "OUT_OF_NETWORK" in token:
+        return "out"
+    return None
+
+
+def profile_network_distance_from_value(value: Any) -> str | None:
+    if isinstance(value, str):
+        return normalize_profile_network_distance(value)
+
+    if isinstance(value, dict):
+        for key, item in value.items():
+            normalized_key = re.sub(r"[^A-Za-z0-9]+", "", str(key)).casefold()
+            if normalized_key in PROFILE_NETWORK_DISTANCE_KEYS:
+                distance = profile_network_distance_from_value(item)
+                if distance:
+                    return distance
+
+        for item in value.values():
+            distance = profile_network_distance_from_value(item)
+            if distance:
+                return distance
+
+    if isinstance(value, list):
+        for item in value:
+            distance = profile_network_distance_from_value(item)
+            if distance:
+                return distance
+
+    return None
+
+
+def fetch_profile_network_distance(
+    api: Any,
+    public_id: str,
+    cache_dir: Path,
+    refresh_cache: bool,
+) -> str | None:
+    get_network_info = getattr(api, "get_profile_network_info", None)
+    if not callable(get_network_info):
+        return None
+
+    try:
+        network_info = cached_json(
+            cache_dir,
+            "profile-network-info",
+            {"public_id": public_id},
+            refresh_cache,
+            lambda: get_network_info(public_id),
+        )
+    except Exception:
+        return None
+
+    return profile_network_distance_from_value(network_info)
+
+
+def profile_search_keywords(public_id: str) -> list[str]:
+    parts = [part for part in public_id.split("-") if part]
+    name_parts = [*parts]
+    while len(name_parts) > 1 and any(char.isdigit() for char in name_parts[-1]):
+        name_parts.pop()
+
+    keywords = [
+        " ".join(name_parts).strip(),
+        " ".join(parts).strip(),
+        public_id.strip(),
+    ]
+    return [keyword for keyword in dict.fromkeys(keywords) if keyword]
+
+
+def profile_search_result_matches(
+    row: dict[str, Any], public_id: str, target_urn_id: str | None
+) -> bool:
+    url = row.get("url")
+    if isinstance(url, str) and canonical_profile_public_id(url) == public_id:
+        return True
+
+    urn_id = row.get("urn_id")
+    return (
+        isinstance(target_urn_id, str)
+        and bool(target_urn_id)
+        and isinstance(urn_id, str)
+        and urn_id == target_urn_id
+    )
+
+
+def fetch_profile_search_distance(
+    api: Any,
+    public_id: str,
+    cache_dir: Path,
+    refresh_cache: bool,
+    target_urn_id: str | None = None,
+) -> str | None:
+    for network_depth in ("F", "S", "O"):
+        for keywords in profile_search_keywords(public_id):
+            rows = cached_json(
+                cache_dir,
+                "profile-search",
+                {
+                    "public_id": public_id,
+                    "keywords": keywords,
+                    "network_depth": network_depth,
+                },
+                refresh_cache,
+                lambda keywords=keywords, network_depth=network_depth: api.search(
+                    {
+                        "keywords": keywords,
+                        "filters": (
+                            "List((key:resultType,value:List(PEOPLE)),"
+                            f"(key:network,value:List({network_depth})))"
+                        ),
+                    },
+                    limit=10,
+                ),
+            )
+            if not isinstance(rows, list):
+                continue
+
+            for result in rows:
+                if not isinstance(result, dict):
+                    continue
+                row = connection_result_row(result)
+                if not profile_search_result_matches(row, public_id, target_urn_id):
+                    continue
+
+                distance = row.get("distance")
+                if isinstance(distance, str):
+                    normalized = normalize_profile_network_distance(distance)
+                    if normalized:
+                        return normalized
+                return normalize_profile_network_distance(network_depth)
+
+    return None
+
+
 def mutual_connection_fetch_limit(row: dict[str, Any]) -> int:
     mutual_count = row.get("mutual_count")
     if isinstance(mutual_count, int) and mutual_count > 0:
@@ -805,7 +932,7 @@ def find_company_path_candidates(
     )
     company_urn_id = company.get("urn_id")
     if not company_urn_id:
-        fail(f"Could not resolve LinkedIn company URN: {company_input}")
+        fail(f"Could not resolve LinkedIn company: {company_input}")
     company_name = company.get("name")
 
     candidates: list[dict[str, Any]] = []
@@ -864,47 +991,6 @@ def find_company_path_candidates(
         },
         "candidates": candidates,
     }
-
-
-def write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
-    fieldnames = ["url", "name", "distance", "jobtitle", "location", "urn_id"]
-    with path.open("w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
-        writer.writeheader()
-        for row in rows:
-            writer.writerow({key: row.get(key) for key in fieldnames})
-
-
-def write_company_path_csv(path: Path, candidates: list[dict[str, Any]]) -> None:
-    fieldnames = [
-        "degree",
-        "path_status",
-        "name",
-        "jobtitle",
-        "location",
-        "distance",
-        "urn_id",
-        "url",
-    ]
-    with path.open("w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
-        writer.writeheader()
-        for candidate in candidates:
-            target = candidate.get("target")
-            if not isinstance(target, dict):
-                target = {}
-            writer.writerow(
-                {
-                    "degree": candidate.get("degree"),
-                    "path_status": candidate.get("path_status"),
-                    "name": target.get("name"),
-                    "jobtitle": target.get("jobtitle"),
-                    "location": target.get("location"),
-                    "distance": target.get("distance"),
-                    "urn_id": target.get("urn_id"),
-                    "url": target.get("url"),
-                }
-            )
 
 
 def target_display_name(target: dict[str, Any]) -> str:
@@ -966,8 +1052,6 @@ def render_company_path_result(result: dict[str, Any]) -> str:
 
     if company.get("url"):
         lines.append(f"LinkedIn: {company['url']}")
-    if company.get("urn_id"):
-        lines.append(f"Company URN: {company['urn_id']}")
 
     max_degree = query.get("max_degree")
     lines.extend(
@@ -1015,55 +1099,102 @@ def render_company_path_result(result: dict[str, Any]) -> str:
                 lines.append(f"   Role: {target['jobtitle']}")
             if target.get("location"):
                 lines.append(f"   Location: {target['location']}")
-            if degree == 1:
-                lines.append(f"   Path: you -> {name}")
-            else:
+            if degree == 2:
                 mutual_names = candidate_mutual_names(candidate)
                 mutuals_summary = render_mutuals_summary(candidate)
-                if mutual_names:
-                    lines.append(
-                        f"   Path: you -> {' / '.join(mutual_names)} -> {name}"
-                    )
-                    if mutuals_summary:
-                        lines.append(f"   {mutuals_summary}")
-                    lines.append(
-                        "   Status: second-degree; introducer candidates visible"
-                    )
-                else:
-                    lines.append(f"   Path: you -> unknown introducer -> {name}")
-                    lines.append(
-                        "   Status: candidate confirmed as second-degree; exact introducer unresolved"
-                    )
+                if mutual_names and mutuals_summary:
+                    lines.append(f"   {mutuals_summary}")
             if target.get("url"):
                 lines.append(f"   Profile: {target['url']}")
-            if target.get("urn_id"):
-                lines.append(f"   URN: {target['urn_id']}")
             lines.append("")
             index += 1
 
     return "\n".join(lines).rstrip()
 
 
-def run_profile_command(args: argparse.Namespace) -> None:
-    api = build_api(args.cookie_file)
-    urn_id = profile_urn_id(api, profile_slug(args.profile))
-    rows = fetch_connection_rows(api, urn_id, args.limit)
+def render_human_mutual(row: dict[str, Any]) -> str | None:
+    name = row.get("name")
+    if not isinstance(name, str) or not name:
+        return None
 
-    wrote = []
-    if args.json_out:
-        args.json_out.write_text(
-            json.dumps(rows, indent=2, ensure_ascii=False), encoding="utf-8"
-        )
-        wrote.append(str(args.json_out))
-    if args.csv_out:
-        write_csv(args.csv_out, rows)
-        wrote.append(str(args.csv_out))
+    url = row.get("url")
+    if isinstance(url, str) and url:
+        return f"{name}\t{url}"
+    return name
 
+
+def render_human_mutuals(rows: list[dict[str, Any]]) -> list[str]:
+    rendered_rows = []
     for row in rows:
-        print(row["url"])
+        rendered = render_human_mutual(row)
+        if rendered:
+            rendered_rows.append(rendered)
+    return rendered_rows
 
-    if wrote:
-        print(f"Wrote {len(rows)} rows to {', '.join(wrote)}", file=sys.stderr)
+
+def run_human_command(args: argparse.Namespace) -> None:
+    api = build_api(args.cookie_file)
+    cache_dir = resolve_path(args.cache_dir)
+    public_id = profile_slug(args.profile_url)
+    distance = fetch_profile_network_distance(
+        api,
+        public_id,
+        cache_dir,
+        args.refresh_cache,
+    )
+
+    if distance == "direct":
+        print("Connection: direct")
+        return
+    if distance == "out":
+        print("Connection: out of network")
+        return
+
+    if distance is None:
+        distance = fetch_profile_search_distance(
+            api,
+            public_id,
+            cache_dir,
+            args.refresh_cache,
+        )
+        if distance == "direct":
+            print("Connection: direct")
+            return
+        if distance == "out":
+            print("Connection: out of network")
+            return
+
+    urn_id = profile_urn_id(api, public_id)
+    if distance is None:
+        distance = fetch_profile_search_distance(
+            api,
+            public_id,
+            cache_dir,
+            args.refresh_cache,
+            urn_id,
+        )
+        if distance == "direct":
+            print("Connection: direct")
+            return
+        if distance == "out":
+            print("Connection: out of network")
+            return
+
+    rows = fetch_mutual_connection_rows(
+        api=api,
+        target_urn_id=urn_id,
+        limit=DEFAULT_MAX_MUTUAL_CONNECTIONS,
+        cache_dir=cache_dir,
+        refresh_cache=args.refresh_cache,
+    )
+    rendered_rows = render_human_mutuals(rows)
+    if not rendered_rows:
+        print("Connection: out of network")
+        return
+
+    print("Mutuals:")
+    for rendered in rendered_rows:
+        print(rendered)
 
 
 def run_company_command(args: argparse.Namespace) -> None:
@@ -1079,25 +1210,7 @@ def run_company_command(args: argparse.Namespace) -> None:
         refresh_cache=args.refresh_cache,
     )
 
-    if args.json_out:
-        args.json_out.write_text(
-            json.dumps(result, indent=2, ensure_ascii=False), encoding="utf-8"
-        )
-    if args.csv_out:
-        candidates = result.get("candidates")
-        if not isinstance(candidates, list):
-            candidates = []
-        write_company_path_csv(args.csv_out, candidates)
-
     print(render_company_path_result(result))
-
-    wrote = []
-    if args.json_out:
-        wrote.append(str(args.json_out))
-    if args.csv_out:
-        wrote.append(str(args.csv_out))
-    if wrote:
-        print(f"Wrote company output to {', '.join(wrote)}", file=sys.stderr)
 
 
 def parse_company_args(argv: list[str]) -> argparse.Namespace:
@@ -1107,7 +1220,7 @@ def parse_company_args(argv: list[str]) -> argparse.Namespace:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""examples:
   uv run warmpath company https://www.linkedin.com/company/ozon-tech
-  uv run warmpath company "Ozon Tech" --max-degree 2 --limit 25
+  uv run warmpath company "Ozon Tech" --max-degree 2 --limit 5
 
 cookies:
   Paste Netscape cookies.txt from Get cookies.txt LOCALLY into cookies/linkedin.cookies,
@@ -1126,7 +1239,7 @@ cookies:
         "--limit",
         type=int,
         default=DEFAULT_COMPANY_PATH_LIMIT,
-        help="Maximum candidates to print. Default: 25.",
+        help="Maximum candidates to print. Default: 5.",
     )
     parser.add_argument(
         "--max-targets",
@@ -1137,38 +1250,26 @@ cookies:
     parser.add_argument("--cache-dir", type=Path, default=DEFAULT_CACHE_DIR)
     parser.add_argument("--refresh-cache", action="store_true")
     parser.add_argument("--cookie-file", type=Path, default=DEFAULT_COOKIE_FILE)
-    parser.add_argument(
-        "--json-out", type=Path, help="Write structured result to this JSON file"
-    )
-    parser.add_argument(
-        "--csv-out", type=Path, help="Write candidates to this CSV file"
-    )
     return parser.parse_args(argv)
 
 
-def parse_connections_args(argv: list[str]) -> argparse.Namespace:
+def parse_human_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        prog="warmpath connections",
-        description="Scrape visible LinkedIn connections for an arbitrary profile.",
+        prog="warmpath human",
+        description="Print mutual LinkedIn connections for a profile.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""examples:
-  uv run warmpath connections https://www.linkedin.com/in/mitchellh/ --limit 50
-  uv run warmpath connections mitchellh --limit 50 --csv-out mitchellh_connections.csv
+  uv run warmpath human https://www.linkedin.com/in/ruslan-gilemzianov/
 
 cookies:
   Paste Netscape cookies.txt from Get cookies.txt LOCALLY into cookies/linkedin.cookies,
   or pass another path with --cookie-file.
 """,
     )
-    parser.add_argument("profile", help="LinkedIn /in/ URL or public slug")
-    parser.add_argument("--limit", type=int, default=50)
+    parser.add_argument("profile_url", help="LinkedIn /in/ profile URL")
+    parser.add_argument("--cache-dir", type=Path, default=DEFAULT_CACHE_DIR)
+    parser.add_argument("--refresh-cache", action="store_true")
     parser.add_argument("--cookie-file", type=Path, default=DEFAULT_COOKIE_FILE)
-    parser.add_argument(
-        "--json-out", type=Path, help="Write fetched profiles to this JSON file"
-    )
-    parser.add_argument(
-        "--csv-out", type=Path, help="Write fetched profiles to this CSV file"
-    )
     return parser.parse_args(argv)
 
 
@@ -1178,21 +1279,20 @@ def parse_main_args(argv: list[str]) -> argparse.Namespace:
         description="Local LinkedIn connection and referral-path tools.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""commands:
-  connections PROFILE
-    Fetch visible connections for a LinkedIn /in/ profile URL or public slug.
+  human PROFILE_URL
+    Print mutual LinkedIn connections for a profile URL.
 
   company COMPANY
     Find people at a company reachable through your LinkedIn network.
     COMPANY can be a LinkedIn /company/ URL or a company name.
 
 examples:
-  uv run warmpath connections mitchellh --limit 50
-  uv run warmpath connections https://www.linkedin.com/in/mitchellh/
+  uv run warmpath human https://www.linkedin.com/in/ruslan-gilemzianov/
   uv run warmpath company https://www.linkedin.com/company/ozon-tech
-  uv run warmpath company "Ozon Tech" --max-degree 2 --limit 25
+  uv run warmpath company "Ozon Tech" --max-degree 2 --limit 5
 
 more help:
-  uv run warmpath connections --help
+  uv run warmpath human --help
   uv run warmpath company --help
 """,
     )
@@ -1207,8 +1307,8 @@ def main(argv: list[str] | None = None) -> None:
         parse_main_args(["--help"])
         return
 
-    if argv and argv[0] == "connections":
-        run_profile_command(parse_connections_args(argv[1:]))
+    if argv and argv[0] == "human":
+        run_human_command(parse_human_args(argv[1:]))
         return
 
     if argv and argv[0] == "company":

@@ -1,11 +1,9 @@
-import json
 import os
-import subprocess
-import sys
 from pathlib import Path
 
 import pytest
 
+from warmpath.cli import build_api, find_company_path_candidates
 
 ROOT = Path(__file__).resolve().parents[1]
 COOKIE_FILE = ROOT / "cookies" / "linkedin.cookies"
@@ -21,42 +19,16 @@ pytestmark = pytest.mark.skipif(
 
 
 def run_company(company: str, tmp_path: Path) -> dict:
-    json_out = tmp_path / "company.json"
-    cache_dir = tmp_path / "cache"
-
-    result = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "warmpath.cli",
-            "company",
-            company,
-            "--max-degree",
-            "2",
-            "--limit",
-            "25",
-            "--max-targets",
-            "50",
-            "--cache-dir",
-            str(cache_dir),
-            "--refresh-cache",
-            "--cookie-file",
-            str(COOKIE_FILE),
-            "--json-out",
-            str(json_out),
-        ],
-        cwd=ROOT,
-        text=True,
-        capture_output=True,
-        timeout=180,
-        check=False,
+    api = build_api(COOKIE_FILE)
+    return find_company_path_candidates(
+        api=api,
+        company_input=company,
+        max_degree=2,
+        limit=25,
+        max_targets=50,
+        cache_dir=tmp_path / "cache",
+        refresh_cache=True,
     )
-
-    assert result.returncode == 0, (
-        f"company failed\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
-    )
-    assert json_out.exists(), "company did not write JSON output"
-    return json.loads(json_out.read_text(encoding="utf-8"))
 
 
 def test_procreate_art_finds_direct_connection(tmp_path: Path) -> None:
