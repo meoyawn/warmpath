@@ -47,40 +47,41 @@ Write both formats:
 uv run warmpath connections mitchellh --limit 50 --json-out mitchellh_connections_50.json --csv-out mitchellh_connections_50.csv
 ```
 
-### Company Paths
+### Company
 
 Find people at a target company who are reachable through your network:
 
 ```sh
-uv run warmpath company-path https://www.linkedin.com/company/ozon-tech
-uv run warmpath company-path "Ozon Tech"
+uv run warmpath company https://www.linkedin.com/company/ozon-tech
+uv run warmpath company "Ozon Tech"
 ```
 
 By default this searches up to second degree:
 
 - direct: `you -> employee`
-- second-degree candidate: `you -> unknown introducer -> employee`
+- second-degree candidate with visible mutuals: `you -> introducer -> employee`
+- unresolved second-degree candidate: `you -> unknown introducer -> employee`
 
-Second-degree paths are marked unresolved when LinkedIn search confirms the person is second-degree but does not return the exact introducer.
+Second-degree paths print mutual introducers when LinkedIn exposes them. They stay marked unresolved when LinkedIn confirms reachability but does not return visible mutuals.
 
 Useful options:
 
 ```sh
-uv run warmpath company-path https://www.linkedin.com/company/ozon-tech --max-degree 2 --limit 25 --json-out ozon_paths.json
+uv run warmpath company https://www.linkedin.com/company/ozon-tech --max-degree 2 --limit 25 --json-out ozon_paths.json
 ```
 
 ## Required Arguments
 
 - `connections profile`: LinkedIn `/in/` URL or public slug, for example `mitchellh`.
-- `company-path company`: LinkedIn `/company/` URL or company name.
+- `company company`: LinkedIn `/company/` URL or company name.
 
 ## Useful Options
 
 - `--limit 50`: number of profiles to fetch. Default: `50`.
 - `--cookie-file cookies/linkedin.cookies`: override cookie file path.
-- `company-path --max-degree 2`: maximum reachable degree to search. Default: `2`.
-- `company-path --cache-dir .linkedin-cache`: cache LinkedIn search results.
-- `company-path --refresh-cache`: bypass cache and fetch fresh results.
+- `company --max-degree 2`: maximum reachable degree to search. Default: `2`.
+- `company --cache-dir .linkedin-cache`: cache LinkedIn search results.
+- `company --refresh-cache`: bypass cache and fetch fresh results.
 - `--help`: show examples and all flags.
 
 ## Output
@@ -96,7 +97,7 @@ JSON and CSV rows contain:
 - `location`
 - `urn_id`
 
-For `company-path`, stdout is human-readable. `--json-out` writes structured company, query, summary, and candidate data.
+For `company`, stdout is human-readable. `--json-out` writes structured company, query, summary, and candidate data.
 
 ## Notes
 

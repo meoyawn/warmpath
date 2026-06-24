@@ -24,6 +24,13 @@ COMPANY_URN_RE = re.compile(
 NETWORK_DEPTH_BY_DEGREE = {1: "F", 2: "S"}
 DEFAULT_COMPANY_PATH_LIMIT = 25
 DEFAULT_CACHE_DIR = Path(".linkedin-cache")
+DEFAULT_MAX_MUTUAL_CONNECTIONS = 50
+MUTUAL_CONNECTION_TEXT_RE = re.compile(r"\bmutual connections?\b", re.IGNORECASE)
+OTHER_MUTUALS_RE = re.compile(
+    r"(?:^|[\s,])(?:&|and)\s+(\d+)\s+other mutual connections?\s*$",
+    re.IGNORECASE,
+)
+MUTUAL_COUNT_RE = re.compile(r"\b(\d+)\s+mutual connections?\b", re.IGNORECASE)
 
 
 def fail(message: str, exit_code: int = 1) -> NoReturn:
@@ -235,12 +242,76 @@ def urn_id_from_result(result: dict[str, Any]) -> str | None:
     return urn.rsplit(":", maxsplit=1)[-1]
 
 
-def connection_result_row(result: dict[str, Any]) -> dict[str, str | None]:
+def text_values_containing(value: Any, pattern: re.Pattern[str]) -> list[str]:
+    matches: list[str] = []
+    stack: list[Any] = [value]
+    while stack:
+        current = stack.pop()
+        if isinstance(current, str):
+            if pattern.search(current):
+                matches.append(current)
+        elif isinstance(current, dict):
+            stack.extend(current.values())
+        elif isinstance(current, list):
+            stack.extend(current)
+    return matches
+
+
+def parse_mutual_connection_text(
+    text: str,
+) -> tuple[list[dict[str, str | None]], int | None, bool]:
+    normalized = re.sub(r"\s+", " ", text).strip()
+    other_match = OTHER_MUTUALS_RE.search(normalized)
+    other_count = int(other_match.group(1)) if other_match else 0
+    names_text = normalized[: other_match.start()].strip(" ,") if other_match else ""
+
+    count_match = MUTUAL_COUNT_RE.search(normalized)
+    if not names_text and count_match:
+        return [], int(count_match.group(1)), True
+
+    names = [
+        name.strip(" ,")
+        for name in re.split(r"\s*,\s*|\s+and\s+", names_text)
+        if name.strip(" ,")
+    ]
+    mutual_connections = [
+        {"name": name, "url": None, "urn_id": None}
+        for name in dict.fromkeys(names)
+    ]
+    if not mutual_connections and not count_match:
+        return [], None, False
+
+    mutual_count = len(mutual_connections) + other_count
+    if count_match and int(count_match.group(1)) > mutual_count:
+        mutual_count = int(count_match.group(1))
+    return mutual_connections, mutual_count, other_count > 0
+
+
+def mutual_connections_from_result(
+    result: dict[str, Any],
+) -> tuple[list[dict[str, str | None]], int | None, bool]:
+    best_connections: list[dict[str, str | None]] = []
+    best_count: int | None = None
+    best_truncated = False
+
+    for text in text_values_containing(result, MUTUAL_CONNECTION_TEXT_RE):
+        connections, count, truncated = parse_mutual_connection_text(text)
+        best_score = (best_count or 0, len(best_connections))
+        score = (count or 0, len(connections))
+        if score > best_score:
+            best_connections = connections
+            best_count = count
+            best_truncated = truncated
+
+    return best_connections, best_count, best_truncated
+
+
+def connection_result_row(result: dict[str, Any]) -> dict[str, Any]:
     tracking = result.get("entityCustomTrackingInfo")
     if not isinstance(tracking, dict):
         tracking = {}
 
-    return {
+    row: dict[str, Any] = {
         "name": text_field(result, "title"),
         "distance": tracking.get("memberDistance"),
         "jobtitle": text_field(result, "primarySubtitle"),
@@ -249,15 +320,25 @@ def connection_result_row(result: dict[str, Any]) -> dict[str, str | None]:
         "url": profile_url_from_result(result),
     }
 
+    mutual_connections, mutual_count, mutuals_truncated = mutual_connections_from_result(
+        result
+    )
+    if mutual_connections or mutual_count is not None:
+        row["mutual_connections"] = mutual_connections
+        row["mutual_count"] = mutual_count
+        row["mutuals_truncated"] = mutuals_truncated
 
-def fetch_connection_rows(api, urn_id: str, limit: int) -> list[dict[str, str | None]]:
+    return row
+
+
+def fetch_connection_rows(api, urn_id: str, limit: int) -> list[dict[str, Any]]:
     params = {
         "filters": (
             "List((key:resultType,value:List(PEOPLE)),"
             f"(key:connectionOf,value:List({urn_id})))"
         )
     }
-    rows: list[dict[str, str | None]] = []
+    rows: list[dict[str, Any]] = []
     seen_urls: set[str] = set()
     offset = 0
 
@@ -457,6 +538,28 @@ def person_target(row: dict[str, Any]) -> dict[str, str | None]:
     }
 
 
+def row_mutual_details(
+    row: dict[str, Any],
+) -> tuple[list[dict[str, str | None]], int | None, bool]:
+    raw_mutual_connections = row.get("mutual_connections")
+    if isinstance(raw_mutual_connections, list):
+        mutual_connections = [
+            item
+            for item in raw_mutual_connections
+            if isinstance(item, dict) and isinstance(item.get("name"), str)
+        ]
+    else:
+        mutual_connections = []
+
+    raw_mutual_count = row.get("mutual_count")
+    mutual_count = raw_mutual_count if isinstance(raw_mutual_count, int) else None
+    raw_mutuals_truncated = row.get("mutuals_truncated")
+    mutuals_truncated = (
+        raw_mutuals_truncated if isinstance(raw_mutuals_truncated, bool) else False
+    )
+    return mutual_connections, mutual_count, mutuals_truncated
+
+
 def company_path_candidate(row: dict[str, Any], degree: int) -> dict[str, Any]:
     target = person_target(row)
     search_source = row.get("_search_source")
@@ -469,6 +572,32 @@ def company_path_candidate(row: dict[str, Any], degree: int) -> dict[str, Any]:
             "target": target,
             "path": [{"role": "me"}, {"role": "target", **target}],
             "evidence": {"source": search_source, "network_depth": "F"},
+        }
+
+    mutual_connections, mutual_count, mutuals_truncated = row_mutual_details(row)
+    if mutual_connections:
+        if mutual_count is None:
+            mutual_count = len(mutual_connections)
+        return {
+            "degree": degree,
+            "path_status": "partially_resolved",
+            "target": target,
+            "mutual_connections": mutual_connections,
+            "mutual_count": mutual_count,
+            "mutuals_truncated": mutuals_truncated,
+            "path": [
+                {"role": "me"},
+                *[
+                    {"role": "introducer_candidate", **mutual}
+                    for mutual in mutual_connections
+                ],
+                {"role": "target", **target},
+            ],
+            "evidence": {
+                "source": search_source,
+                "network_depth": NETWORK_DEPTH_BY_DEGREE[degree],
+                "note": "LinkedIn search returned visible mutual connection candidates.",
+            },
         }
 
     return {
@@ -500,7 +629,7 @@ def fetch_company_people(
     network_depth = NETWORK_DEPTH_BY_DEGREE[degree]
     rows = cached_json(
         cache_dir,
-        "people-search",
+        "people-search-raw",
         {
             "mode": "current_company",
             "company_urn_id": company_urn_id,
@@ -508,19 +637,24 @@ def fetch_company_people(
             "max_targets": max_targets,
         },
         refresh_cache,
-        lambda: api.search_people(
-            current_company=[company_urn_id],
-            network_depths=[network_depth],
+        lambda: api.search(
+            {
+                "filters": (
+                    "List((key:resultType,value:List(PEOPLE)),"
+                    f"(key:currentCompany,value:List({company_urn_id})),"
+                    f"(key:network,value:List({network_depth})))"
+                )
+            },
             limit=max_targets,
         ),
     )
     if not isinstance(rows, list):
         rows = []
 
-    people = [row for row in rows if isinstance(row, dict)]
+    people = [connection_result_row(row) for row in rows if isinstance(row, dict)]
     if people:
         for row in people:
-            row["_search_source"] = "search_people.current_company"
+            row["_search_source"] = "search.current_company"
         return people
 
     if not company_name:
@@ -528,7 +662,7 @@ def fetch_company_people(
 
     fallback_rows = cached_json(
         cache_dir,
-        "people-search",
+        "people-search-raw",
         {
             "mode": "keyword_company",
             "company_name": company_name,
@@ -536,19 +670,117 @@ def fetch_company_people(
             "max_targets": max_targets,
         },
         refresh_cache,
-        lambda: api.search_people(
-            keyword_company=company_name,
-            network_depths=[network_depth],
+        lambda: api.search(
+            {
+                "filters": (
+                    "List((key:resultType,value:List(PEOPLE)),"
+                    f"(key:company,value:List({company_name})),"
+                    f"(key:network,value:List({network_depth})))"
+                )
+            },
             limit=max_targets,
         ),
     )
     if not isinstance(fallback_rows, list):
         return []
 
-    fallback_people = [row for row in fallback_rows if isinstance(row, dict)]
+    fallback_people = [
+        connection_result_row(row) for row in fallback_rows if isinstance(row, dict)
+    ]
     for row in fallback_people:
-        row["_search_source"] = "search_people.keyword_company"
+        row["_search_source"] = "search.keyword_company"
     return fallback_people
+
+
+def fetch_mutual_connection_rows(
+    api: Any,
+    target_urn_id: str,
+    limit: int,
+    cache_dir: Path,
+    refresh_cache: bool,
+) -> list[dict[str, Any]]:
+    rows = cached_json(
+        cache_dir,
+        "mutual-search",
+        {"target_urn_id": target_urn_id, "limit": limit},
+        refresh_cache,
+        lambda: api.search(
+            {
+                "filters": (
+                    "List((key:resultType,value:List(PEOPLE)),"
+                    f"(key:connectionOf,value:List({target_urn_id})),"
+                    "(key:network,value:List(F)))"
+                )
+            },
+            limit=limit,
+        ),
+    )
+    if not isinstance(rows, list):
+        return []
+
+    return [connection_result_row(row) for row in rows if isinstance(row, dict)]
+
+
+def mutual_connection_fetch_limit(row: dict[str, Any]) -> int:
+    mutual_count = row.get("mutual_count")
+    if isinstance(mutual_count, int) and mutual_count > 0:
+        return min(mutual_count, DEFAULT_MAX_MUTUAL_CONNECTIONS)
+    return DEFAULT_MAX_MUTUAL_CONNECTIONS
+
+
+def mutual_connection_payload(row: dict[str, Any]) -> dict[str, str | None] | None:
+    name = row.get("name")
+    if not isinstance(name, str) or not name:
+        return None
+    return {
+        "name": name,
+        "url": row.get("url") if isinstance(row.get("url"), str) else None,
+        "urn_id": row.get("urn_id") if isinstance(row.get("urn_id"), str) else None,
+    }
+
+
+def enrich_row_with_mutual_connections(
+    api: Any,
+    row: dict[str, Any],
+    cache_dir: Path,
+    refresh_cache: bool,
+) -> dict[str, Any]:
+    existing_mutual_connections = row.get("mutual_connections")
+    if isinstance(existing_mutual_connections, list) and existing_mutual_connections:
+        return row
+
+    target_urn_id = row.get("urn_id")
+    if not isinstance(target_urn_id, str) or not target_urn_id:
+        return row
+
+    limit = mutual_connection_fetch_limit(row)
+    if limit < 1:
+        return row
+
+    mutual_rows = fetch_mutual_connection_rows(
+        api,
+        target_urn_id,
+        limit,
+        cache_dir,
+        refresh_cache,
+    )
+    mutual_connections = [
+        payload
+        for payload in (mutual_connection_payload(mutual) for mutual in mutual_rows)
+        if payload is not None
+    ]
+    if not mutual_connections:
+        return row
+
+    enriched = {**row}
+    mutual_count = enriched.get("mutual_count")
+    if not isinstance(mutual_count, int) or mutual_count < len(mutual_connections):
+        mutual_count = len(mutual_connections)
+
+    enriched["mutual_connections"] = mutual_connections
+    enriched["mutual_count"] = mutual_count
+    enriched["mutuals_truncated"] = mutual_count > len(mutual_connections)
+    return enriched
 
 
 def find_company_path_candidates(
@@ -561,7 +793,10 @@ def find_company_path_candidates(
     refresh_cache: bool,
 ) -> dict[str, Any]:
     if max_degree == 3:
-        fail("--max-degree 3 is planned but not implemented yet. Current version supports 1 or 2.", 2)
+        fail(
+            "--max-degree 3 is planned but not implemented yet. Current version supports 1 or 2.",
+            2,
+        )
     if max_degree not in (1, 2):
         fail("--max-degree must be 1, 2, or 3.", 2)
 
@@ -586,14 +821,17 @@ def find_company_path_candidates(
             refresh_cache,
         )
         for row in rows:
+            if degree == 2:
+                row = enrich_row_with_mutual_connections(
+                    api,
+                    row,
+                    cache_dir,
+                    refresh_cache,
+                )
             candidate = company_path_candidate(row, degree)
             target = candidate["target"]
-            dedupe_key = (
-                target.get("urn_id")
-                or "|".join(
-                    str(target.get(key) or "")
-                    for key in ("name", "jobtitle", "location")
-                )
+            dedupe_key = target.get("urn_id") or "|".join(
+                str(target.get(key) or "") for key in ("name", "jobtitle", "location")
             )
             if not dedupe_key or dedupe_key in seen:
                 continue
@@ -628,7 +866,7 @@ def find_company_path_candidates(
     }
 
 
-def write_csv(path: Path, rows: list[dict[str, str | None]]) -> None:
+def write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
     fieldnames = ["url", "name", "distance", "jobtitle", "location", "urn_id"]
     with path.open("w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
@@ -678,6 +916,38 @@ def target_display_name(target: dict[str, Any]) -> str:
     if isinstance(urn_id, str) and urn_id:
         return f"LinkedIn member {urn_id}"
     return "LinkedIn member"
+
+
+def candidate_mutual_names(candidate: dict[str, Any]) -> list[str]:
+    raw_mutual_connections = candidate.get("mutual_connections")
+    if not isinstance(raw_mutual_connections, list):
+        return []
+
+    names: list[str] = []
+    for mutual in raw_mutual_connections:
+        if not isinstance(mutual, dict):
+            continue
+        name = mutual.get("name")
+        if isinstance(name, str) and name:
+            names.append(name)
+    return names
+
+
+def render_mutuals_summary(candidate: dict[str, Any]) -> str | None:
+    names = candidate_mutual_names(candidate)
+    if not names:
+        return None
+
+    raw_total = candidate.get("mutual_count")
+    total = raw_total if isinstance(raw_total, int) else len(names)
+    if total < len(names):
+        total = len(names)
+
+    parts = [*names]
+    remaining = total - len(names)
+    if remaining:
+        parts.append(f"+{remaining} more")
+    return f"Mutuals ({total}): {', '.join(parts)}"
 
 
 def render_company_path_result(result: dict[str, Any]) -> str:
@@ -748,10 +1018,22 @@ def render_company_path_result(result: dict[str, Any]) -> str:
             if degree == 1:
                 lines.append(f"   Path: you -> {name}")
             else:
-                lines.append(f"   Path: you -> unknown introducer -> {name}")
-                lines.append(
-                    "   Status: candidate confirmed as second-degree; exact introducer unresolved"
-                )
+                mutual_names = candidate_mutual_names(candidate)
+                mutuals_summary = render_mutuals_summary(candidate)
+                if mutual_names:
+                    lines.append(
+                        f"   Path: you -> {' / '.join(mutual_names)} -> {name}"
+                    )
+                    if mutuals_summary:
+                        lines.append(f"   {mutuals_summary}")
+                    lines.append(
+                        "   Status: second-degree; introducer candidates visible"
+                    )
+                else:
+                    lines.append(f"   Path: you -> unknown introducer -> {name}")
+                    lines.append(
+                        "   Status: candidate confirmed as second-degree; exact introducer unresolved"
+                    )
             if target.get("url"):
                 lines.append(f"   Profile: {target['url']}")
             if target.get("urn_id"):
@@ -784,7 +1066,7 @@ def run_profile_command(args: argparse.Namespace) -> None:
         print(f"Wrote {len(rows)} rows to {', '.join(wrote)}", file=sys.stderr)
 
 
-def run_company_path_command(args: argparse.Namespace) -> None:
+def run_company_command(args: argparse.Namespace) -> None:
     api = build_api(args.cookie_file)
     max_targets = args.max_targets or args.limit
     result = find_company_path_candidates(
@@ -815,17 +1097,17 @@ def run_company_path_command(args: argparse.Namespace) -> None:
     if args.csv_out:
         wrote.append(str(args.csv_out))
     if wrote:
-        print(f"Wrote company path output to {', '.join(wrote)}", file=sys.stderr)
+        print(f"Wrote company output to {', '.join(wrote)}", file=sys.stderr)
 
 
-def parse_company_path_args(argv: list[str]) -> argparse.Namespace:
+def parse_company_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        prog="warmpath company-path",
+        prog="warmpath company",
         description="Find reachable referral candidates at a LinkedIn company.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""examples:
-  uv run warmpath company-path https://www.linkedin.com/company/ozon-tech
-  uv run warmpath company-path "Ozon Tech" --max-degree 2 --limit 25
+  uv run warmpath company https://www.linkedin.com/company/ozon-tech
+  uv run warmpath company "Ozon Tech" --max-degree 2 --limit 25
 
 cookies:
   Paste Netscape cookies.txt from Get cookies.txt LOCALLY into cookies/linkedin.cookies,
@@ -899,19 +1181,19 @@ def parse_main_args(argv: list[str]) -> argparse.Namespace:
   connections PROFILE
     Fetch visible connections for a LinkedIn /in/ profile URL or public slug.
 
-  company-path COMPANY
+  company COMPANY
     Find people at a company reachable through your LinkedIn network.
     COMPANY can be a LinkedIn /company/ URL or a company name.
 
 examples:
   uv run warmpath connections mitchellh --limit 50
   uv run warmpath connections https://www.linkedin.com/in/mitchellh/
-  uv run warmpath company-path https://www.linkedin.com/company/ozon-tech
-  uv run warmpath company-path "Ozon Tech" --max-degree 2 --limit 25
+  uv run warmpath company https://www.linkedin.com/company/ozon-tech
+  uv run warmpath company "Ozon Tech" --max-degree 2 --limit 25
 
 more help:
   uv run warmpath connections --help
-  uv run warmpath company-path --help
+  uv run warmpath company --help
 """,
     )
     return parser.parse_args(argv)
@@ -929,9 +1211,15 @@ def main(argv: list[str] | None = None) -> None:
         run_profile_command(parse_connections_args(argv[1:]))
         return
 
-    if argv and argv[0] == "company-path":
-        run_company_path_command(parse_company_path_args(argv[1:]))
+    if argv and argv[0] == "company":
+        run_company_command(parse_company_args(argv[1:]))
         return
+
+    if argv[0].startswith("-"):
+        parse_main_args(argv)
+        return
+
+    fail(f"Unknown command: {argv[0]}", 2)
 
     parse_main_args(argv)
 

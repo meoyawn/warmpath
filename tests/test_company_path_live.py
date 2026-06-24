@@ -1,4 +1,5 @@
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -10,13 +11,17 @@ ROOT = Path(__file__).resolve().parents[1]
 COOKIE_FILE = ROOT / "cookies" / "linkedin.cookies"
 
 pytestmark = pytest.mark.skipif(
-    not (COOKIE_FILE.exists() and COOKIE_FILE.stat().st_size > 0),
-    reason="cookies/linkedin.cookies is required for live LinkedIn tests",
+    os.environ.get("WARMPATH_LIVE_TESTS") != "1"
+    or not (COOKIE_FILE.exists() and COOKIE_FILE.stat().st_size > 0),
+    reason=(
+        "WARMPATH_LIVE_TESTS=1 and cookies/linkedin.cookies are required "
+        "for live LinkedIn tests"
+    ),
 )
 
 
-def run_company_path(company: str, tmp_path: Path) -> dict:
-    json_out = tmp_path / "company-path.json"
+def run_company(company: str, tmp_path: Path) -> dict:
+    json_out = tmp_path / "company.json"
     cache_dir = tmp_path / "cache"
 
     result = subprocess.run(
@@ -24,7 +29,7 @@ def run_company_path(company: str, tmp_path: Path) -> dict:
             sys.executable,
             "-m",
             "warmpath.cli",
-            "company-path",
+            "company",
             company,
             "--max-degree",
             "2",
@@ -48,14 +53,14 @@ def run_company_path(company: str, tmp_path: Path) -> dict:
     )
 
     assert result.returncode == 0, (
-        f"company-path failed\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+        f"company failed\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
     )
-    assert json_out.exists(), "company-path did not write JSON output"
+    assert json_out.exists(), "company did not write JSON output"
     return json.loads(json_out.read_text(encoding="utf-8"))
 
 
 def test_procreate_art_finds_direct_connection(tmp_path: Path) -> None:
-    data = run_company_path(
+    data = run_company(
         "https://www.linkedin.com/company/procreate-art/",
         tmp_path,
     )
@@ -72,7 +77,7 @@ def test_procreate_art_finds_direct_connection(tmp_path: Path) -> None:
 
 
 def test_contentsquare_finds_second_degree_connection(tmp_path: Path) -> None:
-    data = run_company_path(
+    data = run_company(
         "https://www.linkedin.com/company/contentsquare/",
         tmp_path,
     )

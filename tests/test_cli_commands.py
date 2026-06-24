@@ -27,9 +27,9 @@ def test_top_level_help_shows_both_command_shapes() -> None:
 
     assert result.returncode == 0
     assert "connections PROFILE" in result.stdout
-    assert "company-path COMPANY" in result.stdout
+    assert "company COMPANY" in result.stdout
     assert "connections mitchellh" in result.stdout
-    assert "company-path https://www.linkedin.com/company/ozon-tech" in result.stdout
+    assert "company https://www.linkedin.com/company/ozon-tech" in result.stdout
 
 
 def test_profile_flag_is_not_a_top_level_command() -> None:
@@ -45,3 +45,18 @@ def test_connections_is_the_profile_command() -> None:
     assert result.returncode == 0
     assert "profile" in result.stdout
     assert "--profile" not in result.stdout
+
+
+def test_company_is_the_company_command() -> None:
+    result = run_cli("company", "--help")
+
+    assert result.returncode == 0
+    assert "LinkedIn /company/ URL" in result.stdout
+    assert "company-path" not in result.stdout
+
+
+def test_company_path_is_not_a_command() -> None:
+    result = run_cli("company-path", "--help")
+
+    assert result.returncode != 0
+    assert "Unknown command: company-path" in result.stderr
