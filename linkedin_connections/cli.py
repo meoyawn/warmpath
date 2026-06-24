@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Callable, NoReturn
 from urllib.parse import unquote, urlparse
 
+from open_linkedin_api import Linkedin
 from requests.cookies import RequestsCookieJar
 
 DEFAULT_COOKIE_FILE = Path("cookies/linkedin.cookies")
@@ -292,8 +293,6 @@ cookies:
     public_id = profile_slug(args.profile)
 
     cookies = load_cookies(cookie_file)
-
-    from open_linkedin_api import Linkedin
 
     api = Linkedin("", "", cookies=cookies)
     use_fast_fetches(api)

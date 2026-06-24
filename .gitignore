@@ -8,3 +8,5 @@ cookies/*
 
 *_connections_*.csv
 *_connections_*.json
+
+.code-review-graph/
