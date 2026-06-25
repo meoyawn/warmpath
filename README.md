@@ -24,10 +24,8 @@ Warmpath needs the `li_at` and `JSESSIONID` cookies. Keep this file private; it 
 Who can introduce me into this company?
 
 ```sh
-uv run warmpath company https://www.linkedin.com/company/hashicorp/
+uv run warmpath company HashiCorp
 ```
-
-Find reachable people at a company. By default, Warmpath checks up to second-degree connections and prints mutual introducers when LinkedIn exposes them.
 
 ### Skill
 
@@ -37,8 +35,6 @@ Which reachable people match this recruiting need?
 uv run warmpath skill Flutter
 ```
 
-Find first- and second-degree profiles with a skill. Warmpath verifies the requested skill against each profile's listed skills when possible.
-
 ### Human
 
 Can I reach this exact person, and through whom?
@@ -46,8 +42,6 @@ Can I reach this exact person, and through whom?
 ```sh
 uv run warmpath human https://www.linkedin.com/in/mitchellh/
 ```
-
-Check a profile URL. Warmpath prints direct, out of network, or matching mutual connections.
 
 ## More Examples
 
