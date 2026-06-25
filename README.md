@@ -2,7 +2,7 @@
 
 # Warmpath
 
-Find LinkedIn mutuals and referral paths using your logged-in LinkedIn cookies.
+Find LinkedIn mutuals and warm paths using your logged-in LinkedIn cookies.
 
 ## Setup
 
@@ -19,36 +19,44 @@ Warmpath needs the `li_at` and `JSESSIONID` cookies. Keep this file private; it 
 
 ## Usage
 
-### Find a path to a company
+### Company
+
+Who can introduce me into this company?
 
 ```sh
 uv run warmpath company https://www.linkedin.com/company/hashicorp/
 ```
 
-By default, company search checks up to second-degree connections and prints mutual introducers when LinkedIn exposes them.
+Find reachable people at a company. By default, Warmpath checks up to second-degree connections and prints mutual introducers when LinkedIn exposes them.
 
-### Check connection status for a person
+### Skill
 
-```sh
-uv run warmpath human https://www.linkedin.com/in/mitchellh/
-```
-
-### Find connections by skill
+Which reachable people match this recruiting need?
 
 ```sh
 uv run warmpath skill Flutter
 ```
 
-By default, skill search checks first- and second-degree profiles and verifies the requested skill against each profile's listed skills.
+Find first- and second-degree profiles with a skill. Warmpath verifies the requested skill against each profile's listed skills when possible.
+
+### Human
+
+Can I reach this exact person, and through whom?
+
+```sh
+uv run warmpath human https://www.linkedin.com/in/mitchellh/
+```
+
+Check a profile URL. Warmpath prints direct, out of network, or matching mutual connections.
 
 ## More Examples
 
 ```sh
 uv run warmpath company "HashiCorp" --max-degree 2 --limit 5
 uv run warmpath company https://www.linkedin.com/company/hashicorp/ --cookie-file cookies/linkedin.cookies
-uv run warmpath human https://www.linkedin.com/in/mitchellh/ --refresh-cache
 uv run warmpath skill Leadership --max-depth 2
-uv run warmpath human --help
+uv run warmpath human https://www.linkedin.com/in/mitchellh/ --refresh-cache
 uv run warmpath company --help
 uv run warmpath skill --help
+uv run warmpath human --help
 ```
