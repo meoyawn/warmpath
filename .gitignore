@@ -11,3 +11,4 @@ cookies/*
 
 .code-review-graph/
 .linkedin-cache/
+.pytest_cache/

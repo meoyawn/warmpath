@@ -263,7 +263,7 @@ def test_skill_flutter_prints_matching_first_and_second_degree_profiles(
     class FakeApi:
         def search(self, params, limit):
             assert params["keywords"] == "Flutter"
-            assert limit == 5
+            assert limit == 25
             if "network,value:List(F)" in params["filters"]:
                 return [
                     {
@@ -315,7 +315,7 @@ def test_skill_default_limit_caps_total_printed_profiles(
     class FakeApi:
         def search(self, params, limit):
             assert params["keywords"] == "Flutter"
-            assert limit == 5
+            assert limit == 25
             if "network,value:List(F)" in params["filters"]:
                 return [
                     {
@@ -500,4 +500,62 @@ def test_skill_leadership_prints_expected_matching_profile(
 
     output = capsys.readouterr().out
     assert "Timur Pokayonkov" in output
+    assert "https://www.linkedin.com/in/timur-pokayonkov/" in output
+
+
+def test_skill_leadership_keeps_pinned_direct_profile_outside_display_limit(
+    monkeypatch, capsys, tmp_path
+) -> None:
+    class FakeApi:
+        def search(self, params, limit):
+            assert params["keywords"] == "Leadership"
+            assert limit == 25
+            if "network,value:List(F)" in params["filters"]:
+                return [
+                    {
+                        "entityUrn": f"urn:li:fsd_profile:direct-{index}",
+                        "entityCustomTrackingInfo": {"memberDistance": "DISTANCE_1"},
+                        "title": {"text": f"Direct Profile {index}"},
+                        "primarySubtitle": {"text": "Generalist"},
+                        "navigationUrl": f"https://www.linkedin.com/in/direct-{index}/",
+                    }
+                    for index in range(1, 7)
+                ] + [
+                    {
+                        "entityUrn": "urn:li:fsd_profile:timur-urn",
+                        "entityCustomTrackingInfo": {"memberDistance": "DISTANCE_1"},
+                        "title": {"text": "Tim Pokaenkov"},
+                        "primarySubtitle": {"text": "Head of Marketing"},
+                        "navigationUrl": (
+                            "https://www.linkedin.com/in/timur-pokayonkov/"
+                        ),
+                    }
+                ]
+            if "network,value:List(S)" in params["filters"]:
+                return []
+            raise AssertionError(params)
+
+        def get_profile_skills(self, public_id=None, urn_id=None):
+            return []
+
+    monkeypatch.setattr(cli, "build_api", lambda cookie_file: FakeApi())
+
+    cli.main(
+        [
+            "skill",
+            "Leadership",
+            "--cache-dir",
+            str(tmp_path),
+            "--refresh-cache",
+        ]
+    )
+
+    output = capsys.readouterr().out
+    numbered_lines = [
+        line
+        for line in output.splitlines()
+        if line and line[0].isdigit() and line[1:2] == "."
+    ]
+
+    assert numbered_lines[0] == "1. Tim Pokaenkov"
     assert "https://www.linkedin.com/in/timur-pokayonkov/" in output
