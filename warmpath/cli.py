@@ -1060,9 +1060,14 @@ def enrich_row_with_mutual_connections(
     row: dict[str, Any],
     cache_dir: Path,
     refresh_cache: bool,
+    force: bool = False,
 ) -> dict[str, Any]:
     existing_mutual_connections = row.get("mutual_connections")
-    if isinstance(existing_mutual_connections, list) and existing_mutual_connections:
+    if (
+        not force
+        and isinstance(existing_mutual_connections, list)
+        and existing_mutual_connections
+    ):
         return row
 
     target_urn_id = row.get("urn_id")
@@ -1338,7 +1343,7 @@ def skill_connection_candidate(row: dict[str, Any], degree: int) -> dict[str, An
     search_source = row.get("_search_source")
     if not isinstance(search_source, str):
         search_source = "search.skill"
-    return {
+    candidate = {
         "degree": degree,
         "target": target,
         "skill_match_quality": row.get("_skill_match_quality"),
@@ -1349,6 +1354,54 @@ def skill_connection_candidate(row: dict[str, Any], degree: int) -> dict[str, An
             "network_depth": NETWORK_DEPTH_BY_DEGREE[degree],
         },
     }
+
+    mutual_connections, mutual_count, mutuals_truncated = row_mutual_details(row)
+    if mutual_connections or mutual_count is not None:
+        candidate["mutual_connections"] = mutual_connections
+        candidate["mutual_count"] = mutual_count
+        candidate["mutuals_truncated"] = mutuals_truncated
+
+    return candidate
+
+
+def enrich_skill_candidate_with_mutual_connections(
+    api: Any,
+    candidate: dict[str, Any],
+    cache_dir: Path,
+    refresh_cache: bool,
+) -> dict[str, Any]:
+    if candidate.get("degree") != 2:
+        return candidate
+    if candidate_mutual_names(candidate):
+        return candidate
+
+    target = candidate.get("target")
+    if not isinstance(target, dict):
+        return candidate
+
+    row = {**target}
+    for key in ("mutual_connections", "mutual_count", "mutuals_truncated"):
+        if key in candidate:
+            row[key] = candidate[key]
+
+    enriched_row = enrich_row_with_mutual_connections(
+        api,
+        row,
+        cache_dir,
+        refresh_cache,
+        force=True,
+    )
+    mutual_connections, mutual_count, mutuals_truncated = row_mutual_details(
+        enriched_row
+    )
+    if not mutual_connections:
+        return candidate
+
+    enriched_candidate = {**candidate}
+    enriched_candidate["mutual_connections"] = mutual_connections
+    enriched_candidate["mutual_count"] = mutual_count
+    enriched_candidate["mutuals_truncated"] = mutuals_truncated
+    return enriched_candidate
 
 
 def skill_candidate_score(candidate: dict[str, Any]) -> tuple[int, int, int, int, str]:
@@ -1418,6 +1471,15 @@ def find_skill_connections(
 
     candidates.sort(key=skill_candidate_score)
     candidates = candidates[:limit]
+    candidates = [
+        enrich_skill_candidate_with_mutual_connections(
+            api,
+            candidate,
+            cache_dir,
+            refresh_cache,
+        )
+        for candidate in candidates
+    ]
     direct_count = sum(1 for candidate in candidates if candidate["degree"] == 1)
     second_count = sum(1 for candidate in candidates if candidate["degree"] == 2)
 
@@ -1491,6 +1553,10 @@ def render_skill_connections_result(result: dict[str, Any]) -> str:
                 lines.append(f"   Role: {target['jobtitle']}")
             if target.get("location"):
                 lines.append(f"   Location: {target['location']}")
+            if degree == 2:
+                mutuals_summary = render_mutuals_summary(candidate)
+                if mutuals_summary:
+                    lines.append(f"   {mutuals_summary}")
             if target.get("url"):
                 lines.append(f"   Profile: {target['url']}")
             lines.append("")

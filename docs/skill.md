@@ -144,6 +144,7 @@ Each candidate prints:
 - name
 - role, when available
 - location, when available
+- mutual connection names for second-degree candidates, when available
 - profile URL, when available
 
 ## Cache Model
@@ -166,6 +167,11 @@ For profile skills, cache keys include either:
 - public profile ID
 - profile URN ID
 
+For mutual searches, cache keys include:
+
+- target profile URN ID
+- mutual search limit
+
 `--refresh-cache` bypasses existing cache files and writes fresh payloads.
 
 ## HTTP Request Fanout
@@ -186,14 +192,16 @@ Cold-cache request shape:
 - up to 25 first-degree profile-skill URN fallback requests
 - up to 25 second-degree profile-skill public-id requests
 - up to 25 second-degree profile-skill URN fallback requests
+- up to 5 displayed second-degree mutual-search requests when search rows do not expose mutual names
 
-Worst case: `2 + (25 * 2 * 2) = 102` LinkedIn API calls.
+Worst case with default display limit: `2 + (25 * 2 * 2) + 5 = 107` LinkedIn API calls.
 
 Typical count is lower because:
 
 - pinned profiles skip profile-skill verification
 - rows without a public ID or URN have fewer lookup keys
 - public-id skill payloads can stop the URN fallback
+- only displayed second-degree candidates without visible mutual names are enriched with mutual searches
 - warm cache avoids repeated HTTP calls
 
 This is why caching still matters for the current implementation. Parallelizing requests would reduce latency, but it would not reduce request volume or LinkedIn rate-limit exposure.
@@ -205,6 +213,7 @@ The current approach favors recall over minimal request count:
 - A wider search window prevents a useful direct connection from being excluded before ranking.
 - Profile-skill verification reduces false positives from keyword search.
 - Visible-text fallback keeps usable results when LinkedIn skill payloads are empty.
+- Second-degree mutual enrichment keeps the printed output actionable when LinkedIn search rows omit exact mutual profiles.
 - Pinned profiles handle known LinkedIn data gaps.
 
 The main cost is HTTP fanout. If request volume becomes the priority, the likely simplification is to remove per-profile skill verification and trust LinkedIn keyword search plus visible-text ranking.

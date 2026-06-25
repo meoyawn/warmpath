@@ -262,6 +262,8 @@ def test_skill_flutter_prints_matching_first_and_second_degree_profiles(
 ) -> None:
     class FakeApi:
         def search(self, params, limit):
+            if "connectionOf,value:List(" in params["filters"]:
+                return []
             assert params["keywords"] == "Flutter"
             assert limit == 25
             if "network,value:List(F)" in params["filters"]:
@@ -375,6 +377,8 @@ def test_skill_search_falls_back_to_profile_urn_when_public_id_skills_are_empty(
 ) -> None:
     class FakeApi:
         def search(self, params, limit):
+            if "connectionOf,value:List(" in params["filters"]:
+                return []
             assert params["keywords"] == "Flutter"
             if "network,value:List(F)" in params["filters"]:
                 return []
@@ -465,6 +469,8 @@ def test_skill_leadership_prints_expected_matching_profile(
 ) -> None:
     class FakeApi:
         def search(self, params, limit):
+            if "connectionOf,value:List(" in params["filters"]:
+                return []
             assert params["keywords"] == "Leadership"
             if "network,value:List(F)" in params["filters"]:
                 return []
@@ -501,6 +507,124 @@ def test_skill_leadership_prints_expected_matching_profile(
     output = capsys.readouterr().out
     assert "Timur Pokayonkov" in output
     assert "https://www.linkedin.com/in/timur-pokayonkov/" in output
+
+
+def test_skill_leadership_prints_second_degree_mutual_profiles(
+    monkeypatch, capsys, tmp_path
+) -> None:
+    silviu_url = "https://www.linkedin.com/in/silviu-imbarus-91574651/"
+    tatar_url = "https://www.linkedin.com/in/tnasybullin/"
+
+    class FakeApi:
+        def search(self, params, limit):
+            if "connectionOf,value:List(silviu-urn)" in params["filters"]:
+                assert "network,value:List(F)" in params["filters"]
+                assert limit == cli.DEFAULT_MAX_MUTUAL_CONNECTIONS
+                return [
+                    {
+                        "entityUrn": "urn:li:fsd_profile:tatar-urn",
+                        "entityCustomTrackingInfo": {"memberDistance": "DISTANCE_1"},
+                        "title": {"text": "Tatar Nasybullin"},
+                        "navigationUrl": tatar_url,
+                    }
+                ]
+
+            assert params["keywords"] == "Leadership"
+            assert limit == 25
+            if "network,value:List(F)" in params["filters"]:
+                return []
+            if "network,value:List(S)" in params["filters"]:
+                return [
+                    {
+                        "entityUrn": "urn:li:fsd_profile:silviu-urn",
+                        "entityCustomTrackingInfo": {"memberDistance": "DISTANCE_2"},
+                        "title": {"text": "Silviu Imbarus"},
+                        "primarySubtitle": {"text": "Engineering Leadership"},
+                        "navigationUrl": silviu_url,
+                    }
+                ]
+            raise AssertionError(params)
+
+        def get_profile_skills(self, public_id=None, urn_id=None):
+            assert public_id == "silviu-imbarus-91574651"
+            return [{"name": "Leadership"}]
+
+    monkeypatch.setattr(cli, "build_api", lambda cookie_file: FakeApi())
+
+    cli.main(
+        [
+            "skill",
+            "Leadership",
+            "--cache-dir",
+            str(tmp_path),
+            "--refresh-cache",
+        ]
+    )
+
+    output = capsys.readouterr().out
+    assert "Silviu Imbarus" in output
+    assert silviu_url in output
+    assert "Mutuals (1): Tatar Nasybullin" in output
+    assert tatar_url not in output
+
+
+def test_skill_second_degree_visible_mutual_names_skip_mutual_profile_search(
+    monkeypatch, capsys, tmp_path
+) -> None:
+    class FakeApi:
+        def search(self, params, limit):
+            if "connectionOf,value:List(" in params["filters"]:
+                raise AssertionError("visible mutual names should avoid mutual search")
+
+            assert params["keywords"] == "Leadership"
+            assert limit == 25
+            if "network,value:List(F)" in params["filters"]:
+                return []
+            if "network,value:List(S)" in params["filters"]:
+                return [
+                    {
+                        "entityUrn": "urn:li:fsd_profile:silviu-urn",
+                        "entityCustomTrackingInfo": {"memberDistance": "DISTANCE_2"},
+                        "title": {"text": "Silviu Imbarus"},
+                        "primarySubtitle": {"text": "Engineering Leadership"},
+                        "navigationUrl": (
+                            "https://www.linkedin.com/in/silviu-imbarus-91574651/"
+                        ),
+                        "insights": [
+                            {
+                                "simpleInsight": {
+                                    "title": {
+                                        "text": (
+                                            "Tatar Nasybullin "
+                                            "and 1 other mutual connection"
+                                        )
+                                    }
+                                }
+                            }
+                        ],
+                    }
+                ]
+            raise AssertionError(params)
+
+        def get_profile_skills(self, public_id=None, urn_id=None):
+            assert public_id == "silviu-imbarus-91574651"
+            return [{"name": "Leadership"}]
+
+    monkeypatch.setattr(cli, "build_api", lambda cookie_file: FakeApi())
+
+    cli.main(
+        [
+            "skill",
+            "Leadership",
+            "--cache-dir",
+            str(tmp_path),
+            "--refresh-cache",
+        ]
+    )
+
+    output = capsys.readouterr().out
+    assert "Silviu Imbarus" in output
+    assert "Mutuals (2): Tatar Nasybullin, +1 more" in output
 
 
 def test_skill_leadership_keeps_pinned_direct_profile_outside_display_limit(
