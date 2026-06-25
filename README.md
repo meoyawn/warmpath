@@ -1,3 +1,5 @@
+![Warmpath banner](warmpath.jpg)
+
 # Warmpath
 
 Find LinkedIn mutuals and referral paths using your logged-in LinkedIn cookies.
