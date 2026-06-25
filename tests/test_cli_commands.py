@@ -309,6 +309,67 @@ def test_skill_flutter_prints_matching_first_and_second_degree_profiles(
     assert "2nd-degree connections" in output
 
 
+def test_skill_default_limit_caps_total_printed_profiles(
+    monkeypatch, capsys, tmp_path
+) -> None:
+    class FakeApi:
+        def search(self, params, limit):
+            assert params["keywords"] == "Flutter"
+            assert limit == 5
+            if "network,value:List(F)" in params["filters"]:
+                return [
+                    {
+                        "entityUrn": f"urn:li:fsd_profile:direct-{index}",
+                        "entityCustomTrackingInfo": {"memberDistance": "DISTANCE_1"},
+                        "title": {"text": f"Direct Flutter Developer {index}"},
+                        "navigationUrl": (
+                            f"https://www.linkedin.com/in/direct-{index}/"
+                        ),
+                    }
+                    for index in range(1, 6)
+                ]
+            if "network,value:List(S)" in params["filters"]:
+                return [
+                    {
+                        "entityUrn": f"urn:li:fsd_profile:second-{index}",
+                        "entityCustomTrackingInfo": {"memberDistance": "DISTANCE_2"},
+                        "title": {"text": f"Second Flutter Developer {index}"},
+                        "navigationUrl": (
+                            f"https://www.linkedin.com/in/second-{index}/"
+                        ),
+                    }
+                    for index in range(1, 3)
+                ]
+            raise AssertionError(params)
+
+        def get_profile_skills(self, public_id=None, urn_id=None):
+            return [{"name": "Flutter"}]
+
+    monkeypatch.setattr(cli, "build_api", lambda cookie_file: FakeApi())
+
+    cli.main(
+        [
+            "skill",
+            "Flutter",
+            "--cache-dir",
+            str(tmp_path),
+            "--refresh-cache",
+        ]
+    )
+
+    output = capsys.readouterr().out
+    numbered_lines = [
+        line
+        for line in output.splitlines()
+        if line and line[0].isdigit() and line[1:2] == "."
+    ]
+
+    assert len(numbered_lines) == 5
+    assert "Found: 5 1st-degree, 0 2nd-degree connections" in output
+    assert "Direct Flutter Developer 5" in output
+    assert "Second Flutter Developer" not in output
+
+
 def test_skill_search_falls_back_to_profile_urn_when_public_id_skills_are_empty(
     monkeypatch, capsys, tmp_path
 ) -> None:

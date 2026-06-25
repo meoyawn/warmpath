@@ -1352,6 +1352,7 @@ def find_skill_connections(
             candidates.append(candidate)
 
     candidates.sort(key=skill_candidate_score)
+    candidates = candidates[:limit]
     direct_count = sum(1 for candidate in candidates if candidate["degree"] == 1)
     second_count = sum(1 for candidate in candidates if candidate["degree"] == 2)
 
