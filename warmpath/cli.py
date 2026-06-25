@@ -22,6 +22,7 @@ COMPANY_URN_RE = re.compile(
 
 NETWORK_DEPTH_BY_DEGREE = {1: "F", 2: "S"}
 DEFAULT_COMPANY_PATH_LIMIT = 5
+DEFAULT_SKILL_SEARCH_LIMIT = 5
 DEFAULT_CACHE_DIR = Path(".linkedin-cache")
 DEFAULT_MAX_MUTUAL_CONNECTIONS = 50
 MUTUAL_CONNECTION_TEXT_RE = re.compile(r"\bmutual connections?\b", re.IGNORECASE)
@@ -537,6 +538,108 @@ def row_mutual_details(
     return mutual_connections, mutual_count, mutuals_truncated
 
 
+def normalized_skill_text(value: str) -> str:
+    return re.sub(r"\s+", " ", value).strip().casefold()
+
+
+def text_contains_skill(text: str, skill: str) -> bool:
+    normalized_text = normalized_skill_text(text)
+    normalized_skill = normalized_skill_text(skill)
+    if not normalized_skill:
+        return False
+    if normalized_text == normalized_skill:
+        return True
+
+    escaped_skill = re.escape(normalized_skill)
+    return bool(
+        re.search(
+            rf"(?<![a-z0-9]){escaped_skill}(?![a-z0-9])",
+            normalized_text,
+        )
+    )
+
+
+def string_values(value: Any) -> list[str]:
+    matches: list[str] = []
+    stack: list[Any] = [value]
+    while stack:
+        current = stack.pop()
+        if isinstance(current, str):
+            matches.append(current)
+        elif isinstance(current, dict):
+            stack.extend(current.values())
+        elif isinstance(current, list):
+            stack.extend(current)
+    return matches
+
+
+def skills_payload_contains_skill(skills: Any, skill: str) -> bool:
+    target = normalized_skill_text(skill)
+    if not target:
+        return False
+
+    for value in string_values(skills):
+        if normalized_skill_text(value) == target:
+            return True
+    return False
+
+
+def row_visible_profile_text_contains_skill(row: dict[str, Any], skill: str) -> bool:
+    for key in ("name", "jobtitle", "location"):
+        value = row.get(key)
+        if isinstance(value, str) and text_contains_skill(value, skill):
+            return True
+    return False
+
+
+def fetch_profile_skills_for_row(
+    api: Any,
+    row: dict[str, Any],
+    cache_dir: Path,
+    refresh_cache: bool,
+) -> Any:
+    url = row.get("url")
+    public_id = canonical_profile_public_id(url) if isinstance(url, str) else None
+    urn_id = row.get("urn_id") if isinstance(row.get("urn_id"), str) else None
+
+    fetch_keys: list[tuple[str, str]] = []
+    if public_id:
+        fetch_keys.append(("public_id", public_id))
+    if urn_id:
+        fetch_keys.append(("urn_id", urn_id))
+
+    for key, value in fetch_keys:
+        try:
+            skills = cached_json(
+                cache_dir,
+                "profile-skills",
+                {key: value},
+                refresh_cache,
+                lambda key=key, value=value: api.get_profile_skills(**{key: value}),
+            )
+        except Exception:
+            continue
+
+        if isinstance(skills, list) and not skills:
+            continue
+        return skills
+
+    return []
+
+
+def row_has_profile_skill(
+    api: Any,
+    row: dict[str, Any],
+    skill: str,
+    cache_dir: Path,
+    refresh_cache: bool,
+) -> bool:
+    skills = fetch_profile_skills_for_row(api, row, cache_dir, refresh_cache)
+    if skills_payload_contains_skill(skills, skill):
+        return True
+    return row_visible_profile_text_contains_skill(row, skill)
+
+
 def company_path_candidate(row: dict[str, Any], degree: int) -> dict[str, Any]:
     target = person_target(row)
     search_source = row.get("_search_source")
@@ -667,6 +770,48 @@ def fetch_company_people(
     for row in fallback_people:
         row["_search_source"] = "search.keyword_company"
     return fallback_people
+
+
+def fetch_skill_connection_rows(
+    api: Any,
+    skill: str,
+    degree: int,
+    limit: int,
+    cache_dir: Path,
+    refresh_cache: bool,
+) -> list[dict[str, Any]]:
+    network_depth = NETWORK_DEPTH_BY_DEGREE[degree]
+    rows = cached_json(
+        cache_dir,
+        "skill-search-raw",
+        {
+            "skill": skill,
+            "network_depth": network_depth,
+            "limit": limit,
+        },
+        refresh_cache,
+        lambda: api.search(
+            {
+                "keywords": skill,
+                "filters": (
+                    "List((key:resultType,value:List(PEOPLE)),"
+                    f"(key:network,value:List({network_depth})))"
+                ),
+            },
+            limit=limit,
+        ),
+    )
+    if not isinstance(rows, list):
+        return []
+
+    people = [connection_result_row(row) for row in rows if isinstance(row, dict)]
+    filtered_people = []
+    for row in people:
+        if not row_has_profile_skill(api, row, skill, cache_dir, refresh_cache):
+            continue
+        row["_search_source"] = "search.skill"
+        filtered_people.append(row)
+    return filtered_people
 
 
 def fetch_mutual_connection_rows(
@@ -1144,6 +1289,150 @@ def render_human_mutuals(rows: list[dict[str, Any]]) -> list[str]:
     return rendered_rows
 
 
+def skill_connection_candidate(row: dict[str, Any], degree: int) -> dict[str, Any]:
+    target = person_target(row)
+    search_source = row.get("_search_source")
+    if not isinstance(search_source, str):
+        search_source = "search.skill"
+    return {
+        "degree": degree,
+        "target": target,
+        "evidence": {
+            "source": search_source,
+            "network_depth": NETWORK_DEPTH_BY_DEGREE[degree],
+        },
+    }
+
+
+def skill_candidate_score(candidate: dict[str, Any]) -> tuple[int, str]:
+    degree = candidate.get("degree")
+    if not isinstance(degree, int):
+        degree = 99
+
+    target = candidate.get("target")
+    if not isinstance(target, dict):
+        target = {}
+    name = target.get("name")
+    if not isinstance(name, str):
+        name = ""
+    return degree, name.casefold()
+
+
+def find_skill_connections(
+    api: Any,
+    skill: str,
+    max_depth: int,
+    limit: int,
+    cache_dir: Path,
+    refresh_cache: bool,
+) -> dict[str, Any]:
+    if max_depth not in (1, 2):
+        fail("--max-depth must be 1 or 2.", 2)
+
+    candidates: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for degree in range(1, max_depth + 1):
+        rows = fetch_skill_connection_rows(
+            api,
+            skill,
+            degree,
+            limit,
+            cache_dir,
+            refresh_cache,
+        )
+        for row in rows:
+            candidate = skill_connection_candidate(row, degree)
+            target = candidate["target"]
+            dedupe_key = target.get("urn_id") or target.get("url") or "|".join(
+                str(target.get(key) or "") for key in ("name", "jobtitle", "location")
+            )
+            if not dedupe_key or dedupe_key in seen:
+                continue
+            seen.add(dedupe_key)
+            candidates.append(candidate)
+
+    candidates.sort(key=skill_candidate_score)
+    direct_count = sum(1 for candidate in candidates if candidate["degree"] == 1)
+    second_count = sum(1 for candidate in candidates if candidate["degree"] == 2)
+
+    return {
+        "schema_version": 1,
+        "query": {
+            "skill": skill,
+            "max_depth": max_depth,
+            "limit": limit,
+        },
+        "summary": {
+            "candidate_count": len(candidates),
+            "direct_count": direct_count,
+            "second_degree_count": second_count,
+        },
+        "candidates": candidates,
+    }
+
+
+def render_skill_connections_result(result: dict[str, Any]) -> str:
+    query = result.get("query")
+    if not isinstance(query, dict):
+        query = {}
+    summary = result.get("summary")
+    if not isinstance(summary, dict):
+        summary = {}
+
+    skill = query.get("skill") or "Unknown skill"
+    max_depth = query.get("max_depth")
+    lines = [
+        f"Skill: {skill}",
+        "",
+        f"Search: reachable profiles up to depth {max_depth}",
+        (
+            "Found: "
+            f"{summary.get('direct_count', 0)} 1st-degree, "
+            f"{summary.get('second_degree_count', 0)} 2nd-degree connections"
+        ),
+    ]
+
+    candidates = result.get("candidates")
+    if not isinstance(candidates, list) or not candidates:
+        lines.extend(
+            [
+                "",
+                "No reachable profiles found with that skill.",
+                "Try increasing --limit or refreshing cache.",
+            ]
+        )
+        return "\n".join(lines)
+
+    index = 1
+    for degree, title in ((1, "1st-degree connections"), (2, "2nd-degree connections")):
+        group = [
+            candidate
+            for candidate in candidates
+            if isinstance(candidate, dict) and candidate.get("degree") == degree
+        ]
+        if not group:
+            continue
+
+        lines.extend(["", title, ""])
+        for candidate in group:
+            target = candidate.get("target")
+            if not isinstance(target, dict):
+                target = {}
+
+            name = target_display_name(target)
+            lines.append(f"{index}. {name}")
+            if target.get("jobtitle"):
+                lines.append(f"   Role: {target['jobtitle']}")
+            if target.get("location"):
+                lines.append(f"   Location: {target['location']}")
+            if target.get("url"):
+                lines.append(f"   Profile: {target['url']}")
+            lines.append("")
+            index += 1
+
+    return "\n".join(lines).rstrip()
+
+
 def run_human_command(args: argparse.Namespace) -> None:
     api = build_api(args.cookie_file)
     cache_dir = resolve_path(args.cache_dir)
@@ -1225,6 +1514,20 @@ def run_company_command(args: argparse.Namespace) -> None:
     print(render_company_path_result(result))
 
 
+def run_skill_command(args: argparse.Namespace) -> None:
+    api = build_api(args.cookie_file)
+    result = find_skill_connections(
+        api=api,
+        skill=args.skill,
+        max_depth=args.max_depth,
+        limit=args.limit,
+        cache_dir=resolve_path(args.cache_dir),
+        refresh_cache=args.refresh_cache,
+    )
+
+    print(render_skill_connections_result(result))
+
+
 def parse_company_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="warmpath company",
@@ -1265,6 +1568,40 @@ cookies:
     return parser.parse_args(argv)
 
 
+def parse_skill_args(argv: list[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        prog="warmpath skill",
+        description="Find reachable LinkedIn profiles with a skill.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""examples:
+  uv run warmpath skill Flutter
+  uv run warmpath skill Leadership --max-depth 2
+
+cookies:
+  Paste Netscape cookies.txt from Get cookies.txt LOCALLY into cookies/linkedin.cookies,
+  or pass another path with --cookie-file.
+""",
+    )
+    parser.add_argument("skill", help="skill name to search for")
+    parser.add_argument(
+        "--max-depth",
+        type=int,
+        choices=(1, 2),
+        default=2,
+        help="Maximum network depth to search. Default: 2.",
+    )
+    parser.add_argument(
+        "--limit",
+        type=int,
+        default=DEFAULT_SKILL_SEARCH_LIMIT,
+        help="Maximum LinkedIn search results to inspect per depth. Default: 5.",
+    )
+    parser.add_argument("--cache-dir", type=Path, default=DEFAULT_CACHE_DIR)
+    parser.add_argument("--refresh-cache", action="store_true")
+    parser.add_argument("--cookie-file", type=Path, default=DEFAULT_COOKIE_FILE)
+    return parser.parse_args(argv)
+
+
 def parse_human_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="warmpath human",
@@ -1298,14 +1635,19 @@ def parse_main_args(argv: list[str]) -> argparse.Namespace:
     Find people at a company reachable through your LinkedIn network.
     COMPANY can be a LinkedIn /company/ URL or a company name.
 
+  skill SKILL
+    Find 1st- and 2nd-degree LinkedIn profiles with a skill.
+
 examples:
   uv run warmpath human https://www.linkedin.com/in/ruslan-gilemzianov/
   uv run warmpath company https://www.linkedin.com/company/ozon-tech
   uv run warmpath company "Ozon Tech" --max-degree 2 --limit 5
+  uv run warmpath skill Flutter
 
 more help:
   uv run warmpath human --help
   uv run warmpath company --help
+  uv run warmpath skill --help
 """,
     )
     return parser.parse_args(argv)
@@ -1325,6 +1667,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if argv and argv[0] == "company":
         run_company_command(parse_company_args(argv[1:]))
+        return
+
+    if argv and argv[0] == "skill":
+        run_skill_command(parse_skill_args(argv[1:]))
         return
 
     if argv[0].startswith("-"):

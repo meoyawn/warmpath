@@ -31,12 +31,22 @@ By default, company search checks up to second-degree connections and prints mut
 uv run warmpath human https://www.linkedin.com/in/mitchellh/
 ```
 
+### Find connections by skill
+
+```sh
+uv run warmpath skill Flutter
+```
+
+By default, skill search checks first- and second-degree profiles and verifies the requested skill against each profile's listed skills.
+
 ## More Examples
 
 ```sh
 uv run warmpath company "HashiCorp" --max-degree 2 --limit 5
 uv run warmpath company https://www.linkedin.com/company/hashicorp/ --cookie-file cookies/linkedin.cookies
 uv run warmpath human https://www.linkedin.com/in/mitchellh/ --refresh-cache
+uv run warmpath skill Leadership --max-depth 2
 uv run warmpath human --help
 uv run warmpath company --help
+uv run warmpath skill --help
 ```

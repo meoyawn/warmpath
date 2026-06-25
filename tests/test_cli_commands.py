@@ -31,8 +31,10 @@ def test_top_level_help_shows_command_shapes() -> None:
     assert result.returncode == 0
     assert "human PROFILE_URL" in result.stdout
     assert "company COMPANY" in result.stdout
+    assert "skill SKILL" in result.stdout
     assert f"human {RUSLAN_URL}" in result.stdout
     assert "company https://www.linkedin.com/company/ozon-tech" in result.stdout
+    assert "skill Flutter" in result.stdout
 
 
 def test_profile_flag_is_not_a_top_level_command() -> None:
@@ -65,8 +67,29 @@ def test_company_is_the_company_command() -> None:
     assert "company-path" not in result.stdout
 
 
+def test_skill_is_the_skill_command() -> None:
+    result = run_cli("skill", "--help")
+
+    assert result.returncode == 0
+    assert "skill name to search for" in result.stdout
+    assert "Default: 2." in result.stdout
+    assert "Default: 5." in result.stdout
+
+
 def test_company_default_limit_is_five() -> None:
     args = cli.parse_company_args(["https://www.linkedin.com/company/binance/"])
+
+    assert args.limit == 5
+
+
+def test_skill_default_max_depth_is_two() -> None:
+    args = cli.parse_skill_args(["Flutter"])
+
+    assert args.max_depth == 2
+
+
+def test_skill_default_limit_is_five() -> None:
+    args = cli.parse_skill_args(["Flutter"])
 
     assert args.limit == 5
 
@@ -232,3 +255,188 @@ def test_human_out_of_network_profile_prints_out_of_network(
     )
 
     assert capsys.readouterr().out.splitlines() == ["Connection: out of network"]
+
+
+def test_skill_flutter_prints_matching_first_and_second_degree_profiles(
+    monkeypatch, capsys, tmp_path
+) -> None:
+    class FakeApi:
+        def search(self, params, limit):
+            assert params["keywords"] == "Flutter"
+            assert limit == 5
+            if "network,value:List(F)" in params["filters"]:
+                return [
+                    {
+                        "entityUrn": "urn:li:fsd_profile:direct-urn",
+                        "entityCustomTrackingInfo": {"memberDistance": "DISTANCE_1"},
+                        "title": {"text": "Direct Flutter Developer"},
+                        "primarySubtitle": {"text": "Mobile Engineer"},
+                        "navigationUrl": "https://www.linkedin.com/in/direct-flutter/",
+                    }
+                ]
+            if "network,value:List(S)" in params["filters"]:
+                return [
+                    {
+                        "entityUrn": "urn:li:fsd_profile:danis-urn",
+                        "entityCustomTrackingInfo": {"memberDistance": "DISTANCE_2"},
+                        "title": {"text": "Daniil Sunyaev"},
+                        "primarySubtitle": {"text": "Flutter Developer"},
+                        "navigationUrl": "https://www.linkedin.com/in/dan1s/",
+                    }
+                ]
+            raise AssertionError(params)
+
+        def get_profile_skills(self, public_id=None, urn_id=None):
+            assert public_id in {"direct-flutter", "dan1s"}
+            return [{"name": "Flutter"}]
+
+    monkeypatch.setattr(cli, "build_api", lambda cookie_file: FakeApi())
+
+    cli.main(
+        [
+            "skill",
+            "Flutter",
+            "--cache-dir",
+            str(tmp_path),
+            "--refresh-cache",
+        ]
+    )
+
+    output = capsys.readouterr().out
+    assert "Direct Flutter Developer" in output
+    assert "https://www.linkedin.com/in/dan1s/" in output
+    assert "1st-degree connections" in output
+    assert "2nd-degree connections" in output
+
+
+def test_skill_search_falls_back_to_profile_urn_when_public_id_skills_are_empty(
+    monkeypatch, capsys, tmp_path
+) -> None:
+    class FakeApi:
+        def search(self, params, limit):
+            assert params["keywords"] == "Flutter"
+            if "network,value:List(F)" in params["filters"]:
+                return []
+            if "network,value:List(S)" in params["filters"]:
+                return [
+                    {
+                        "entityUrn": (
+                            "urn:li:fsd_profile:ACoAAA1KfpkB0EeSqf9VZ2pkhoDCllRCroVjBC0"
+                        ),
+                        "entityCustomTrackingInfo": {"memberDistance": "DISTANCE_2"},
+                        "title": {"text": "Daniil Sunyaev"},
+                        "primarySubtitle": {
+                            "text": "Mobile Engineer | iOS, Swift, Flutter, Android"
+                        },
+                        "navigationUrl": "https://www.linkedin.com/in/dan1s/",
+                    }
+                ]
+            raise AssertionError(params)
+
+        def get_profile_skills(self, public_id=None, urn_id=None):
+            if public_id == "dan1s":
+                return []
+            assert urn_id == "ACoAAA1KfpkB0EeSqf9VZ2pkhoDCllRCroVjBC0"
+            return [{"name": "Flutter"}]
+
+    monkeypatch.setattr(cli, "build_api", lambda cookie_file: FakeApi())
+
+    cli.main(
+        [
+            "skill",
+            "Flutter",
+            "--cache-dir",
+            str(tmp_path),
+            "--refresh-cache",
+        ]
+    )
+
+    assert "https://www.linkedin.com/in/dan1s/" in capsys.readouterr().out
+
+
+def test_skill_search_keeps_visible_profile_skill_when_skill_endpoint_is_empty(
+    monkeypatch, capsys, tmp_path
+) -> None:
+    class FakeApi:
+        def search(self, params, limit):
+            assert params["keywords"] == "Flutter"
+            if "network,value:List(F)" in params["filters"]:
+                return [
+                    {
+                        "entityUrn": (
+                            "urn:li:fsd_profile:ACoAAA1KfpkB0EeSqf9VZ2pkhoDCllRCroVjBC0"
+                        ),
+                        "entityCustomTrackingInfo": {"memberDistance": "DISTANCE_1"},
+                        "title": {"text": "Danis Ziganshin"},
+                        "primarySubtitle": {
+                            "text": "Mobile Engineer | iOS, Swift, Flutter, Android"
+                        },
+                        "secondarySubtitle": {"text": "Kazan"},
+                        "navigationUrl": "https://www.linkedin.com/in/dan1s/",
+                    }
+                ]
+            if "network,value:List(S)" in params["filters"]:
+                return []
+            raise AssertionError(params)
+
+        def get_profile_skills(self, public_id=None, urn_id=None):
+            return []
+
+    monkeypatch.setattr(cli, "build_api", lambda cookie_file: FakeApi())
+
+    cli.main(
+        [
+            "skill",
+            "Flutter",
+            "--cache-dir",
+            str(tmp_path),
+            "--refresh-cache",
+        ]
+    )
+
+    output = capsys.readouterr().out
+    assert "Danis Ziganshin" in output
+    assert "https://www.linkedin.com/in/dan1s/" in output
+
+
+def test_skill_leadership_prints_expected_matching_profile(
+    monkeypatch, capsys, tmp_path
+) -> None:
+    class FakeApi:
+        def search(self, params, limit):
+            assert params["keywords"] == "Leadership"
+            if "network,value:List(F)" in params["filters"]:
+                return []
+            if "network,value:List(S)" in params["filters"]:
+                return [
+                    {
+                        "entityUrn": "urn:li:fsd_profile:timur-urn",
+                        "entityCustomTrackingInfo": {"memberDistance": "DISTANCE_2"},
+                        "title": {"text": "Timur Pokayonkov"},
+                        "primarySubtitle": {"text": "Engineering Leader"},
+                        "navigationUrl": (
+                            "https://www.linkedin.com/in/timur-pokayonkov/"
+                        ),
+                    }
+                ]
+            raise AssertionError(params)
+
+        def get_profile_skills(self, public_id=None, urn_id=None):
+            assert public_id == "timur-pokayonkov"
+            return [{"name": "Leadership"}]
+
+    monkeypatch.setattr(cli, "build_api", lambda cookie_file: FakeApi())
+
+    cli.main(
+        [
+            "skill",
+            "Leadership",
+            "--cache-dir",
+            str(tmp_path),
+            "--refresh-cache",
+        ]
+    )
+
+    output = capsys.readouterr().out
+    assert "Timur Pokayonkov" in output
+    assert "https://www.linkedin.com/in/timur-pokayonkov/" in output
