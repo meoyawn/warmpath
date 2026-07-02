@@ -542,6 +542,28 @@ def row_mutual_details(
     return mutual_connections, mutual_count, mutuals_truncated
 
 
+def row_matches_degree(row: dict[str, Any], degree: int) -> bool:
+    expected_distances = {1: "direct", 2: "second"}
+    expected_distance = expected_distances.get(degree)
+    if expected_distance is None:
+        return True
+
+    distance = row.get("distance")
+    if not isinstance(distance, str):
+        return True
+
+    normalized_distance = normalize_profile_network_distance(distance)
+    return normalized_distance is None or normalized_distance == expected_distance
+
+
+def company_row_has_mutual_path(row: dict[str, Any], degree: int) -> bool:
+    if degree != 2:
+        return True
+
+    mutual_connections, _, _ = row_mutual_details(row)
+    return bool(mutual_connections)
+
+
 def normalized_skill_text(value: str) -> str:
     return re.sub(r"\s+", " ", value).strip().casefold()
 
@@ -765,7 +787,11 @@ def fetch_company_people(
     if not isinstance(rows, list):
         rows = []
 
-    people = [connection_result_row(row) for row in rows if isinstance(row, dict)]
+    people = [
+        row
+        for row in (connection_result_row(row) for row in rows if isinstance(row, dict))
+        if row_matches_degree(row, degree)
+    ]
     if people:
         for row in people:
             row["_search_source"] = "search.current_company"
@@ -799,7 +825,11 @@ def fetch_company_people(
         return []
 
     fallback_people = [
-        connection_result_row(row) for row in fallback_rows if isinstance(row, dict)
+        row
+        for row in (
+            connection_result_row(row) for row in fallback_rows if isinstance(row, dict)
+        )
+        if row_matches_degree(row, degree)
     ]
     for row in fallback_people:
         row["_search_source"] = "search.keyword_company"
@@ -1149,6 +1179,8 @@ def find_company_path_candidates(
                     cache_dir,
                     refresh_cache,
                 )
+                if not company_row_has_mutual_path(row, degree):
+                    continue
             candidate = company_path_candidate(row, degree)
             target = candidate["target"]
             dedupe_key = target.get("urn_id") or "|".join(

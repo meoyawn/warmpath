@@ -2,6 +2,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 from warmpath import cli
 
 
@@ -9,7 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 RUSLAN_URL = "https://www.linkedin.com/in/ruslan-gilemzianov/"
 
 
-def run_cli(*args: str) -> subprocess.CompletedProcess[str]:
+def run_cli(*args: str, timeout: int = 30) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [
             sys.executable,
@@ -20,7 +22,7 @@ def run_cli(*args: str) -> subprocess.CompletedProcess[str]:
         cwd=ROOT,
         text=True,
         capture_output=True,
-        timeout=30,
+        timeout=timeout,
         check=False,
     )
 
@@ -80,6 +82,30 @@ def test_company_default_limit_is_five() -> None:
     args = cli.parse_company_args(["https://www.linkedin.com/company/binance/"])
 
     assert args.limit == 5
+
+
+def test_company_yadro_excludes_out_of_network_profile(tmp_path) -> None:
+    cookie_file = ROOT / "cookies" / "linkedin.cookies"
+    if not cookie_file.exists() or cookie_file.stat().st_size == 0:
+        pytest.skip("LinkedIn cookies are required for live company integration test")
+
+    result = run_cli(
+        "company",
+        "yadro",
+        "--limit",
+        "10",
+        "--max-degree",
+        "2",
+        "--cache-dir",
+        str(tmp_path),
+        "--cookie-file",
+        str(cookie_file),
+        "--refresh-cache",
+        timeout=120,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "https://www.linkedin.com/in/egorkazachkov/" not in result.stdout
 
 
 def test_skill_default_max_depth_is_two() -> None:
