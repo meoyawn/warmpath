@@ -26,6 +26,10 @@ tasks:
       - rm -rf dist
       - UV_CACHE_DIR="${TMPDIR:-/tmp}/warmpath-uv-cache" uv build --no-sources
 
+  outdated:
+    desc: Print outdated project dependencies.
+    cmd: uv tree --outdated
+
   release:
     desc: Check, build, publish, and smoke-test a version already committed and tagged as vX.Y.Z.
     deps:
