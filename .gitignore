@@ -9,3 +9,4 @@ __pycache__/
 .code-review-graph/
 .linkedin-cache/
 .pytest_cache/
+.pypi-token
