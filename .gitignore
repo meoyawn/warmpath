@@ -3,9 +3,6 @@
 __pycache__/
 *.pyc
 
-cookies/*
-!cookies/.gitkeep
-
 *_connections_*.csv
 *_connections_*.json
 

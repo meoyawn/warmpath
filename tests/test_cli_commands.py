@@ -84,8 +84,22 @@ def test_company_default_limit_is_five() -> None:
     assert args.limit == 5
 
 
+def test_default_paths_use_user_directories() -> None:
+    args = cli.parse_company_args(["https://www.linkedin.com/company/binance/"])
+
+    assert (
+        args.cookie_file
+        == Path.home() / ".config" / "warmpath" / "linkedin.cookies"
+    )
+    assert args.cache_dir == Path.home() / ".cache" / "warmpath"
+
+
+def test_resolve_path_expands_home() -> None:
+    assert cli.resolve_path(Path("~/warmpath-test")) == Path.home() / "warmpath-test"
+
+
 def test_company_yadro_excludes_out_of_network_profile(tmp_path) -> None:
-    cookie_file = ROOT / "cookies" / "linkedin.cookies"
+    cookie_file = cli.DEFAULT_COOKIE_FILE
     if not cookie_file.exists() or cookie_file.stat().st_size == 0:
         pytest.skip("LinkedIn cookies are required for live company integration test")
 

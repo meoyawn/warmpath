@@ -9,13 +9,13 @@ Find LinkedIn mutuals and warm paths using your logged-in LinkedIn cookies.
 1. Install [Get cookies.txt LOCALLY](https://chromewebstore.google.com/detail/get-cookiestxt-locally/cclelndahbckbenkjhflpdbgdldlbecc?hl=en).
 2. Log in to LinkedIn in Chrome.
 3. Use the extension to export cookies for `linkedin.com` in Netscape `cookies.txt` format.
-4. Create `cookies/linkedin.cookies` and paste the full export there:
+4. Create `~/.config/warmpath/linkedin.cookies` and paste the full export there:
 
 ```text
-cookies/linkedin.cookies
+~/.config/warmpath/linkedin.cookies
 ```
 
-Warmpath needs the `li_at` and `JSESSIONID` cookies. Keep this file private; it is ignored by Git.
+Warmpath needs the `li_at` and `JSESSIONID` cookies. Keep this file private; it lives outside the repository.
 
 ## Usage
 
@@ -24,7 +24,7 @@ Warmpath needs the `li_at` and `JSESSIONID` cookies. Keep this file private; it 
 Who can introduce me into this company?
 
 ```sh
-uv run warmpath company HashiCorp
+uvx warmpath company HashiCorp
 ```
 
 ### Skill
@@ -32,7 +32,7 @@ uv run warmpath company HashiCorp
 Which reachable people match this recruiting need?
 
 ```sh
-uv run warmpath skill Flutter
+uvx warmpath skill Flutter
 ```
 
 ### Human
@@ -40,17 +40,17 @@ uv run warmpath skill Flutter
 Can I reach this exact person, and through whom?
 
 ```sh
-uv run warmpath human https://www.linkedin.com/in/mitchellh/
+uvx warmpath human https://www.linkedin.com/in/mitchellh/
 ```
 
 ## More Examples
 
 ```sh
-uv run warmpath company "HashiCorp" --max-degree 2 --limit 5
-uv run warmpath company https://www.linkedin.com/company/hashicorp/ --cookie-file cookies/linkedin.cookies
-uv run warmpath skill Leadership --max-depth 2
-uv run warmpath human https://www.linkedin.com/in/mitchellh/ --refresh-cache
-uv run warmpath company --help
-uv run warmpath skill --help
-uv run warmpath human --help
+uvx warmpath company "HashiCorp" --max-degree 2 --limit 5
+uvx warmpath company https://www.linkedin.com/company/hashicorp/ --cookie-file ~/.config/warmpath/linkedin.cookies
+uvx warmpath skill Leadership --max-depth 2
+uvx warmpath human https://www.linkedin.com/in/mitchellh/ --refresh-cache
+uvx warmpath company --help
+uvx warmpath skill --help
+uvx warmpath human --help
 ```

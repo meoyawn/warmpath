@@ -11,7 +11,8 @@ from urllib.parse import unquote, urlparse
 from open_linkedin_api import Linkedin
 from requests.cookies import RequestsCookieJar
 
-DEFAULT_COOKIE_FILE = Path("cookies/linkedin.cookies")
+DEFAULT_CONFIG_DIR = Path.home() / ".config" / "warmpath"
+DEFAULT_COOKIE_FILE = DEFAULT_CONFIG_DIR / "linkedin.cookies"
 
 
 PROFILE_URL_RE = re.compile(r"/in/([^/?#]+)/?")
@@ -24,7 +25,7 @@ NETWORK_DEPTH_BY_DEGREE = {1: "F", 2: "S"}
 DEFAULT_COMPANY_PATH_LIMIT = 5
 DEFAULT_SKILL_SEARCH_LIMIT = 5
 DEFAULT_SKILL_CANDIDATE_WINDOW = 25
-DEFAULT_CACHE_DIR = Path(".linkedin-cache")
+DEFAULT_CACHE_DIR = Path.home() / ".cache" / "warmpath"
 DEFAULT_MAX_MUTUAL_CONNECTIONS = 50
 PINNED_SKILL_PROFILE_URLS = {
     "leadership": ("https://www.linkedin.com/in/timur-pokayonkov/",),
@@ -112,6 +113,7 @@ def load_cookies(path: Path) -> RequestsCookieJar:
 
 
 def resolve_path(path: Path) -> Path:
+    path = path.expanduser()
     if path.is_absolute():
         return path
     return Path.cwd() / path
@@ -1698,11 +1700,11 @@ def parse_company_args(argv: list[str]) -> argparse.Namespace:
         description="Find reachable referral candidates at a LinkedIn company.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""examples:
-  uv run warmpath company https://www.linkedin.com/company/ozon-tech
-  uv run warmpath company "Ozon Tech" --max-degree 2 --limit 5
+  uvx warmpath company https://www.linkedin.com/company/ozon-tech
+  uvx warmpath company "Ozon Tech" --max-degree 2 --limit 5
 
 cookies:
-  Paste Netscape cookies.txt from Get cookies.txt LOCALLY into cookies/linkedin.cookies,
+  Paste Netscape cookies.txt from Get cookies.txt LOCALLY into ~/.config/warmpath/linkedin.cookies,
   or pass another path with --cookie-file.
 """,
     )
@@ -1738,11 +1740,11 @@ def parse_skill_args(argv: list[str]) -> argparse.Namespace:
         description="Find reachable LinkedIn profiles with a skill.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""examples:
-  uv run warmpath skill Flutter
-  uv run warmpath skill Leadership --max-depth 2
+  uvx warmpath skill Flutter
+  uvx warmpath skill Leadership --max-depth 2
 
 cookies:
-  Paste Netscape cookies.txt from Get cookies.txt LOCALLY into cookies/linkedin.cookies,
+  Paste Netscape cookies.txt from Get cookies.txt LOCALLY into ~/.config/warmpath/linkedin.cookies,
   or pass another path with --cookie-file.
 """,
     )
@@ -1772,10 +1774,10 @@ def parse_human_args(argv: list[str]) -> argparse.Namespace:
         description="Print mutual LinkedIn connections for a profile.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""examples:
-  uv run warmpath human https://www.linkedin.com/in/ruslan-gilemzianov/
+  uvx warmpath human https://www.linkedin.com/in/ruslan-gilemzianov/
 
 cookies:
-  Paste Netscape cookies.txt from Get cookies.txt LOCALLY into cookies/linkedin.cookies,
+  Paste Netscape cookies.txt from Get cookies.txt LOCALLY into ~/.config/warmpath/linkedin.cookies,
   or pass another path with --cookie-file.
 """,
     )
@@ -1803,15 +1805,15 @@ def parse_main_args(argv: list[str]) -> argparse.Namespace:
     Find 1st- and 2nd-degree LinkedIn profiles with a skill.
 
 examples:
-  uv run warmpath human https://www.linkedin.com/in/ruslan-gilemzianov/
-  uv run warmpath company https://www.linkedin.com/company/ozon-tech
-  uv run warmpath company "Ozon Tech" --max-degree 2 --limit 5
-  uv run warmpath skill Flutter
+  uvx warmpath human https://www.linkedin.com/in/ruslan-gilemzianov/
+  uvx warmpath company https://www.linkedin.com/company/ozon-tech
+  uvx warmpath company "Ozon Tech" --max-degree 2 --limit 5
+  uvx warmpath skill Flutter
 
 more help:
-  uv run warmpath human --help
-  uv run warmpath company --help
-  uv run warmpath skill --help
+  uvx warmpath human --help
+  uvx warmpath company --help
+  uvx warmpath skill --help
 """,
     )
     return parser.parse_args(argv)

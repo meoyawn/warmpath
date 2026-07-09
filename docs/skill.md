@@ -3,7 +3,7 @@
 This document describes the current implementation of:
 
 ```sh
-uv run warmpath skill <Skill>
+uvx warmpath skill <Skill>
 ```
 
 ## Entry Point
@@ -27,7 +27,7 @@ Current defaults:
 - `--max-depth`: `2`
 - `--limit`: `5`
 - candidate search window: `25`
-- cache directory: `.linkedin-cache`
+- cache directory: `~/.cache/warmpath`
 
 `--limit` is the display limit. It caps how many profiles are printed.
 
@@ -149,7 +149,7 @@ Each candidate prints:
 
 ## Cache Model
 
-`cached_json` stores JSON payloads under `.linkedin-cache`.
+`cached_json` stores JSON payloads under `~/.cache/warmpath`.
 
 Cache filenames use:
 
