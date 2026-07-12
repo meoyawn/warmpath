@@ -3,6 +3,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from requests import Request, Session
 
 from warmpath import cli
 
@@ -96,6 +97,25 @@ def test_default_paths_use_user_directories() -> None:
 
 def test_resolve_path_expands_home() -> None:
     assert cli.resolve_path(Path("~/warmpath-test")) == Path.home() / "warmpath-test"
+
+
+def test_load_netscape_cookies_keeps_session_cookies_sendable(tmp_path) -> None:
+    cookie_file = tmp_path / "linkedin.cookies"
+    cookie_file.write_text(
+        "# Netscape HTTP Cookie File\n"
+        ".www.linkedin.com\tTRUE\t/\tTRUE\t0\tJSESSIONID\tajax:token\n"
+    )
+
+    jar = cli.load_netscape_cookies(cookie_file)
+    session = Session()
+    session.cookies = jar
+    request = session.prepare_request(
+        Request("GET", "https://www.linkedin.com/voyager/api/me")
+    )
+
+    cookie = next(cookie for cookie in jar if cookie.name == "JSESSIONID")
+    assert cookie.expires is None
+    assert "JSESSIONID=ajax:token" in request.headers["Cookie"]
 
 
 def test_company_yadro_excludes_out_of_network_profile(tmp_path) -> None:
