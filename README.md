@@ -17,6 +17,27 @@ Find LinkedIn mutuals and warm paths using your logged-in LinkedIn cookies.
 
 Warmpath needs the `li_at` and `JSESSIONID` cookies. Keep this file private; it lives outside the repository.
 
+## Development
+
+[go-task](https://taskfile.dev/) is required to run the repository checks. Install it with Homebrew on macOS:
+
+```sh
+brew install go-task
+```
+
+For other platforms, follow the [go-task installation guide](https://taskfile.dev/docs/installation). Verify that the `task` command is available before running any checks:
+
+```sh
+task --version
+```
+
+Then install the Python development dependencies and run the full check suite:
+
+```sh
+uv sync
+task check
+```
+
 ## Usage
 
 ### Company
