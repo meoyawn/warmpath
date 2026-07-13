@@ -115,7 +115,7 @@ def test_load_netscape_cookies_keeps_session_cookies_sendable(tmp_path) -> None:
 
     cookie = next(cookie for cookie in jar if cookie.name == "JSESSIONID")
     assert cookie.expires is None
-    assert "JSESSIONID=ajax:token" in request.headers["Cookie"]
+    assert request.headers["Cookie"] == "JSESSIONID=ajax:token"
 
 
 def test_company_yadro_excludes_out_of_network_profile(tmp_path) -> None:
