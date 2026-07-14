@@ -81,6 +81,11 @@ def load_netscape_cookies(path: Path) -> RequestsCookieJar:
 
     jar = RequestsCookieJar()
     for cookie in source:
+        # Netscape exports use `0` for session cookies.  MozillaCookieJar
+        # preserves that as an epoch timestamp, which requests then treats as
+        # expired and omits from outgoing requests.
+        if cookie.expires == 0:
+            cookie.expires = None
         jar.set_cookie(cookie)
     return jar
 
