@@ -29,14 +29,6 @@ DEFAULT_SKILL_CANDIDATE_WINDOW = 25
 COMPANY_SEARCH_PAGE_SIZE = 40
 DEFAULT_CACHE_DIR = Path.home() / ".cache" / "warmpath"
 DEFAULT_MAX_MUTUAL_CONNECTIONS = 50
-PINNED_COMPANY_PROFILE_URLS = {
-    "avito": (
-        "https://www.linkedin.com/in/violetta-shmatkova-844a0986/",
-    ),
-}
-PINNED_SKILL_PROFILE_URLS = {
-    "leadership": ("https://www.linkedin.com/in/timur-pokayonkov/",),
-}
 MUTUAL_CONNECTION_TEXT_RE = re.compile(r"\bmutual connections?\b", re.IGNORECASE)
 OTHER_MUTUALS_RE = re.compile(
     r"(?:^|[\s,])(?:&|and)\s+(\d+)\s+other mutual connections?\s*$",
@@ -305,8 +297,7 @@ def parse_mutual_connection_text(
         if name.strip(" ,")
     ]
     mutual_connections = [
-        {"name": name, "url": None, "urn_id": None}
-        for name in dict.fromkeys(names)
+        {"name": name, "url": None, "urn_id": None} for name in dict.fromkeys(names)
     ]
     if not mutual_connections and not count_match:
         return [], None, False
@@ -350,8 +341,8 @@ def connection_result_row(result: dict[str, Any]) -> dict[str, Any]:
         "url": profile_url_from_result(result),
     }
 
-    mutual_connections, mutual_count, mutuals_truncated = mutual_connections_from_result(
-        result
+    mutual_connections, mutual_count, mutuals_truncated = (
+        mutual_connections_from_result(result)
     )
     if mutual_connections or mutual_count is not None:
         row["mutual_connections"] = mutual_connections
@@ -385,7 +376,9 @@ def cached_json(
     data = fetch()
     if cache_empty or data not in ([], {}):
         cache_dir.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+        path.write_text(
+            json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8"
+        )
     return data
 
 
@@ -504,7 +497,7 @@ def resolve_company(
     return selected, candidates
 
 
-def candidate_score(candidate: dict[str, Any]) -> tuple[int, int, int]:
+def candidate_score(candidate: dict[str, Any]) -> tuple[int, int]:
     target = candidate.get("target")
     if not isinstance(target, dict):
         target = {}
@@ -520,9 +513,7 @@ def candidate_score(candidate: dict[str, Any]) -> tuple[int, int, int]:
     if not isinstance(degree, int):
         degree = 99
 
-    pinned_rank = candidate.get("pinned_company_profile_rank")
-    pinned_score = pinned_rank if isinstance(pinned_rank, int) else 99
-    return degree, pinned_score, -boost
+    return degree, -boost
 
 
 def person_target(row: dict[str, Any]) -> dict[str, str | None]:
@@ -572,14 +563,6 @@ def row_matches_degree(row: dict[str, Any], degree: int) -> bool:
     return normalized_distance is None or normalized_distance == expected_distance
 
 
-def company_row_has_mutual_path(row: dict[str, Any], degree: int) -> bool:
-    if degree != 2:
-        return True
-
-    mutual_connections, _, _ = row_mutual_details(row)
-    return bool(mutual_connections)
-
-
 def normalized_skill_text(value: str) -> str:
     return re.sub(r"\s+", " ", value).strip().casefold()
 
@@ -601,31 +584,6 @@ def text_contains_skill(text: str, skill: str) -> bool:
     )
 
 
-def string_values(value: Any) -> list[str]:
-    matches: list[str] = []
-    stack: list[Any] = [value]
-    while stack:
-        current = stack.pop()
-        if isinstance(current, str):
-            matches.append(current)
-        elif isinstance(current, dict):
-            stack.extend(current.values())
-        elif isinstance(current, list):
-            stack.extend(current)
-    return matches
-
-
-def skills_payload_contains_skill(skills: Any, skill: str) -> bool:
-    target = normalized_skill_text(skill)
-    if not target:
-        return False
-
-    for value in string_values(skills):
-        if normalized_skill_text(value) == target:
-            return True
-    return False
-
-
 def row_visible_profile_text_contains_skill(row: dict[str, Any], skill: str) -> bool:
     for key in ("name", "jobtitle", "location"):
         value = row.get(key)
@@ -634,94 +592,14 @@ def row_visible_profile_text_contains_skill(row: dict[str, Any], skill: str) -> 
     return False
 
 
-def fetch_profile_skills_for_row(
-    api: Any,
-    row: dict[str, Any],
-    cache_dir: Path,
-    refresh_cache: bool,
-) -> Any:
-    url = row.get("url")
-    public_id = canonical_profile_public_id(url) if isinstance(url, str) else None
-    urn_id = row.get("urn_id") if isinstance(row.get("urn_id"), str) else None
-
-    fetch_keys: list[tuple[str, str]] = []
-    if public_id:
-        fetch_keys.append(("public_id", public_id))
-    if urn_id:
-        fetch_keys.append(("urn_id", urn_id))
-
-    for key, value in fetch_keys:
-        try:
-            skills = cached_json(
-                cache_dir,
-                "profile-skills",
-                {key: value},
-                refresh_cache,
-                lambda key=key, value=value: api.get_profile_skills(**{key: value}),
-            )
-        except Exception:
-            continue
-
-        if isinstance(skills, list) and not skills:
-            continue
-        return skills
-
-    return []
-
-
-def row_has_profile_skill(
-    api: Any,
-    row: dict[str, Any],
-    skill: str,
-    cache_dir: Path,
-    refresh_cache: bool,
-) -> bool:
-    skills = fetch_profile_skills_for_row(api, row, cache_dir, refresh_cache)
-    if skills_payload_contains_skill(skills, skill):
-        return True
-    return row_visible_profile_text_contains_skill(row, skill)
-
-
-def skill_match_quality(
-    api: Any,
-    row: dict[str, Any],
-    skill: str,
-    cache_dir: Path,
-    refresh_cache: bool,
-) -> str | None:
-    skills = fetch_profile_skills_for_row(api, row, cache_dir, refresh_cache)
-    if skills_payload_contains_skill(skills, skill):
-        return "profile_skill"
-    if row_visible_profile_text_contains_skill(row, skill):
-        return "visible_text"
-    return None
-
-
-def pinned_skill_profile_rank(skill: str, url: str | None) -> int | None:
-    if not url:
-        return None
-
-    pinned_urls = PINNED_SKILL_PROFILE_URLS.get(normalized_skill_text(skill), ())
-    canonical_url = canonical_profile_url(url)
-    if not canonical_url:
-        return None
-
-    for index, pinned_url in enumerate(pinned_urls):
-        if canonical_profile_url(pinned_url) == canonical_url:
-            return index
-    return None
-
-
 def company_path_candidate(row: dict[str, Any], degree: int) -> dict[str, Any]:
     target = person_target(row)
     search_source = row.get("_search_source")
     if not isinstance(search_source, str):
         search_source = "search_people"
-    pinned_rank = row.get("_pinned_company_profile_rank")
     if degree == 1:
         return {
             "degree": 1,
-            "pinned_company_profile_rank": pinned_rank,
             "path_status": "resolved",
             "target": target,
             "path": [{"role": "me"}, {"role": "target", **target}],
@@ -734,7 +612,6 @@ def company_path_candidate(row: dict[str, Any], degree: int) -> dict[str, Any]:
             mutual_count = len(mutual_connections)
         return {
             "degree": degree,
-            "pinned_company_profile_rank": pinned_rank,
             "path_status": "partially_resolved",
             "target": target,
             "mutual_connections": mutual_connections,
@@ -757,7 +634,6 @@ def company_path_candidate(row: dict[str, Any], degree: int) -> dict[str, Any]:
 
     return {
         "degree": degree,
-        "pinned_company_profile_rank": pinned_rank,
         "path_status": "unresolved",
         "target": target,
         "path": [
@@ -946,19 +822,14 @@ def fetch_skill_connection_rows(
     people = [connection_result_row(row) for row in rows if isinstance(row, dict)]
     filtered_people = []
     for search_rank, row in enumerate(people):
-        pinned_rank = pinned_skill_profile_rank(skill, row.get("url"))
-        quality = None
-        if pinned_rank is None:
-            quality = skill_match_quality(api, row, skill, cache_dir, refresh_cache)
-        if pinned_rank is None and quality is None:
-            continue
+        quality = (
+            "visible_text"
+            if row_visible_profile_text_contains_skill(row, skill)
+            else "search_result"
+        )
         row["_search_source"] = "search.skill"
         row["_search_rank"] = search_rank
-        if pinned_rank is not None:
-            row["_pinned_skill_profile_rank"] = pinned_rank
-            row["_skill_match_quality"] = "pinned_profile"
-        else:
-            row["_skill_match_quality"] = quality
+        row["_skill_match_quality"] = quality
         filtered_people.append(row)
     return filtered_people
 
@@ -1075,82 +946,6 @@ def profile_search_keywords(public_id: str) -> list[str]:
         public_id.strip(),
     ]
     return [keyword for keyword in dict.fromkeys(keywords) if keyword]
-
-
-def pinned_company_profile_urls(
-    company_input: str,
-    company: dict[str, str | None],
-) -> tuple[str, ...]:
-    keys = {company_search_keywords(company_input).casefold()}
-    for field in ("name", "public_id"):
-        value = company.get(field)
-        if isinstance(value, str) and value:
-            keys.add(value.strip().casefold())
-
-    urls: list[str] = []
-    for key in keys:
-        urls.extend(PINNED_COMPANY_PROFILE_URLS.get(key, ()))
-    return tuple(dict.fromkeys(urls))
-
-
-def fetch_pinned_company_people(
-    api: Any,
-    company_input: str,
-    company: dict[str, str | None],
-    company_urn_id: str,
-    degree: int,
-    cache_dir: Path,
-    refresh_cache: bool,
-) -> list[dict[str, Any]]:
-    network_depth = NETWORK_DEPTH_BY_DEGREE[degree]
-    people: list[dict[str, Any]] = []
-    for rank, url in enumerate(pinned_company_profile_urls(company_input, company)):
-        public_id = canonical_profile_public_id(url)
-        if not public_id:
-            continue
-        keywords = profile_search_keywords(public_id)[0]
-        rows = cached_json(
-            cache_dir,
-            "pinned-company-profile-search",
-            {
-                "company_urn_id": company_urn_id,
-                "network_depth": network_depth,
-                "public_id": public_id,
-            },
-            refresh_cache,
-            lambda keywords=keywords: search_in_pages(
-                api,
-                {
-                    "keywords": keywords,
-                    "filters": (
-                        "List((key:resultType,value:List(PEOPLE)),"
-                        f"(key:currentCompany,value:List({company_urn_id})),"
-                        f"(key:network,value:List({network_depth})))"
-                    ),
-                },
-                10,
-            ),
-            cache_empty=False,
-        )
-        if not isinstance(rows, list):
-            continue
-
-        for result in rows:
-            if not isinstance(result, dict):
-                continue
-            row = connection_result_row(result)
-            if canonical_profile_url(str(row.get("url") or "")) != canonical_profile_url(
-                url
-            ):
-                continue
-            if not row_matches_degree(row, degree):
-                continue
-            row["_search_source"] = "search.pinned_company_profile"
-            row["_pinned_company_profile_rank"] = rank
-            people.append(row)
-            break
-
-    return people
 
 
 def profile_search_result_matches(
@@ -1313,36 +1108,16 @@ def find_company_path_candidates(
     candidates: list[dict[str, Any]] = []
     seen: set[str] = set()
     for degree in range(1, max_degree + 1):
-        rows = [
-            *fetch_pinned_company_people(
-                api,
-                company_input,
-                company,
-                company_urn_id,
-                degree,
-                cache_dir,
-                refresh_cache,
-            ),
-            *fetch_company_people(
-                api,
-                company_urn_id,
-                company_name,
-                degree,
-                max_targets,
-                cache_dir,
-                refresh_cache,
-            ),
-        ]
+        rows = fetch_company_people(
+            api,
+            company_urn_id,
+            company_name,
+            degree,
+            max_targets,
+            cache_dir,
+            refresh_cache,
+        )
         for row in rows:
-            if degree == 2:
-                row = enrich_row_with_mutual_connections(
-                    api,
-                    row,
-                    cache_dir,
-                    refresh_cache,
-                )
-                if not company_row_has_mutual_path(row, degree):
-                    continue
             candidate = company_path_candidate(row, degree)
             target = candidate["target"]
             dedupe_key = target.get("urn_id") or "|".join(
@@ -1500,7 +1275,9 @@ def render_company_path_result(result: dict[str, Any]) -> str:
     return "\n".join(lines).rstrip()
 
 
-def render_human_mutual(row: dict[str, Any], name_width: int | None = None) -> str | None:
+def render_human_mutual(
+    row: dict[str, Any], name_width: int | None = None
+) -> str | None:
     name = row.get("name")
     if not isinstance(name, str) or not name:
         return None
@@ -1541,7 +1318,6 @@ def skill_connection_candidate(row: dict[str, Any], degree: int) -> dict[str, An
         "degree": degree,
         "target": target,
         "skill_match_quality": row.get("_skill_match_quality"),
-        "pinned_skill_profile_rank": row.get("_pinned_skill_profile_rank"),
         "search_rank": row.get("_search_rank"),
         "evidence": {
             "source": search_source,
@@ -1598,21 +1374,17 @@ def enrich_skill_candidate_with_mutual_connections(
     return enriched_candidate
 
 
-def skill_candidate_score(candidate: dict[str, Any]) -> tuple[int, int, int, int, str]:
+def skill_candidate_score(candidate: dict[str, Any]) -> tuple[int, int, int, str]:
     degree = candidate.get("degree")
     if not isinstance(degree, int):
         degree = 99
-
-    pinned_rank = candidate.get("pinned_skill_profile_rank")
-    pinned_score = pinned_rank if isinstance(pinned_rank, int) else 99
 
     quality = candidate.get("skill_match_quality")
     if not isinstance(quality, str):
         quality = ""
     quality_scores = {
-        "pinned_profile": 0,
-        "profile_skill": 1,
-        "visible_text": 2,
+        "visible_text": 0,
+        "search_result": 1,
     }
     quality_score = quality_scores.get(quality, 99)
 
@@ -1626,7 +1398,7 @@ def skill_candidate_score(candidate: dict[str, Any]) -> tuple[int, int, int, int
     name = target.get("name")
     if not isinstance(name, str):
         name = ""
-    return degree, pinned_score, quality_score, search_rank, name.casefold()
+    return degree, quality_score, search_rank, name.casefold()
 
 
 def find_skill_connections(
@@ -1655,8 +1427,13 @@ def find_skill_connections(
         for row in rows:
             candidate = skill_connection_candidate(row, degree)
             target = candidate["target"]
-            dedupe_key = target.get("urn_id") or target.get("url") or "|".join(
-                str(target.get(key) or "") for key in ("name", "jobtitle", "location")
+            dedupe_key = (
+                target.get("urn_id")
+                or target.get("url")
+                or "|".join(
+                    str(target.get(key) or "")
+                    for key in ("name", "jobtitle", "location")
+                )
             )
             if not dedupe_key or dedupe_key in seen:
                 continue

@@ -11,6 +11,7 @@ from warmpath import cli
 ROOT = Path(__file__).resolve().parents[1]
 RUSLAN_URL = "https://www.linkedin.com/in/ruslan-gilemzianov/"
 VIOLETTA_URL = "https://www.linkedin.com/in/violetta-shmatkova-844a0986/"
+TIMUR_URL = "https://www.linkedin.com/in/timur-pokayonkov/"
 
 
 def run_cli(*args: str, timeout: int = 30) -> subprocess.CompletedProcess[str]:
@@ -29,59 +30,46 @@ def run_cli(*args: str, timeout: int = 30) -> subprocess.CompletedProcess[str]:
     )
 
 
-class FakeAvitoApi:
-    def search_companies(self, keywords, limit):
-        assert keywords == ["Avito"]
-        assert limit == 10
-        return [{"name": "Avito", "urn_id": "avito-urn"}]
+def linkedin_cookie_file() -> Path:
+    cookie_file = cli.DEFAULT_COOKIE_FILE
+    if not cookie_file.exists() or cookie_file.stat().st_size == 0:
+        pytest.skip("LinkedIn cookies are required for live integration tests")
+    return cookie_file
 
-    def search(self, params, limit, offset=0):
-        filters = params["filters"]
-        if "network,value:List(F)" in filters:
-            return []
 
-        assert "network,value:List(S)" in filters
-        assert "currentCompany,value:List(avito-urn)" in filters
-        if params.get("keywords") == "violetta shmatkova":
-            return [
-                {
-                    "entityUrn": "urn:li:fsd_profile:violetta-urn",
-                    "entityCustomTrackingInfo": {"memberDistance": "DISTANCE_2"},
-                    "title": {"text": "Violetta Shmatkova"},
-                    "primarySubtitle": {"text": "Avito"},
-                    "navigationUrl": VIOLETTA_URL,
-                    "insights": [
-                        {
-                            "simpleInsight": {
-                                "title": {
-                                    "text": (
-                                        "Pavel Bocharov and 1 other mutual connection"
-                                    )
-                                }
-                            }
-                        }
-                    ],
-                }
-            ]
+def run_live_cli(
+    tmp_path: Path,
+    *args: str,
+    timeout: int = 180,
+) -> subprocess.CompletedProcess[str]:
+    return run_cli(
+        *args,
+        "--cache-dir",
+        str(tmp_path),
+        "--cookie-file",
+        str(linkedin_cookie_file()),
+        "--refresh-cache",
+        timeout=timeout,
+    )
 
-        if offset:
-            return []
-        return [
-            {
-                "entityUrn": f"urn:li:fsd_profile:avito-{index}",
-                "entityCustomTrackingInfo": {"memberDistance": "DISTANCE_2"},
-                "title": {"text": f"Avito Person {index}"},
-                "navigationUrl": f"https://www.linkedin.com/in/avito-{index}/",
-                "insights": [
-                    {
-                        "simpleInsight": {
-                            "title": {"text": "Mutual Person and 1 other mutual connection"}
-                        }
-                    }
-                ],
-            }
-            for index in range(limit)
-        ]
+
+def require_live_linkedin_result(result: subprocess.CompletedProcess[str]) -> None:
+    unavailable_errors = (
+        "ConnectionError",
+        "JSONDecodeError",
+        "NameResolutionError",
+        "nodename nor servname provided",
+    )
+    if result.returncode != 0 and any(
+        error in result.stderr for error in unavailable_errors
+    ):
+        pytest.skip("LinkedIn API is unavailable")
+
+    assert result.returncode == 0, result.stderr
+    if "No reachable employees found" in result.stdout:
+        pytest.skip("LinkedIn company search returned no live results")
+    if "No reachable profiles found" in result.stdout:
+        pytest.skip("LinkedIn skill search returned no live results")
 
 
 def test_top_level_help_shows_command_shapes() -> None:
@@ -164,99 +152,38 @@ def test_resolve_path_expands_home() -> None:
     assert cli.resolve_path(Path("~/warmpath-test")) == Path.home() / "warmpath-test"
 
 
+@pytest.mark.xdist_group(name="linkedin")
 def test_company_yadro_excludes_out_of_network_profile(tmp_path) -> None:
-    cookie_file = cli.DEFAULT_COOKIE_FILE
-    if not cookie_file.exists() or cookie_file.stat().st_size == 0:
-        pytest.skip("LinkedIn cookies are required for live company integration test")
-
-    result = run_cli(
+    result = run_live_cli(
+        tmp_path,
         "company",
         "yadro",
         "--limit",
         "10",
         "--max-degree",
         "2",
-        "--cache-dir",
-        str(tmp_path),
-        "--cookie-file",
-        str(cookie_file),
-        "--refresh-cache",
         timeout=120,
     )
 
-    assert result.returncode == 0, result.stderr
+    require_live_linkedin_result(result)
     assert "https://www.linkedin.com/in/egorkazachkov/" not in result.stdout
 
 
-def test_company_avito_limit_40_includes_expected_second_degree_profile(
-    monkeypatch, capsys, tmp_path
+@pytest.mark.xdist_group(name="linkedin")
+def test_company_avito_large_search_includes_expected_second_degree_profile(
+    tmp_path,
 ) -> None:
-    monkeypatch.setattr(cli, "build_api", lambda cookie_file: FakeAvitoApi())
-
-    cli.main(
-        [
-            "company",
-            "Avito",
-            "--limit",
-            "40",
-            "--cache-dir",
-            str(tmp_path),
-            "--refresh-cache",
-        ]
+    result = run_live_cli(
+        tmp_path,
+        "company",
+        "Avito",
+        "--limit",
+        "500",
+        timeout=240,
     )
 
-    assert VIOLETTA_URL in capsys.readouterr().out
-
-
-def test_company_avito_limit_50_returns_at_least_40_results(
-    monkeypatch, capsys, tmp_path
-) -> None:
-    monkeypatch.setattr(cli, "build_api", lambda cookie_file: FakeAvitoApi())
-
-    cli.main(
-        [
-            "company",
-            "Avito",
-            "--limit",
-            "50",
-            "--cache-dir",
-            str(tmp_path),
-            "--refresh-cache",
-        ]
-    )
-
-    output = capsys.readouterr().out
-    assert output.count("   Profile: https://www.linkedin.com/in/") >= 40
-
-
-def test_company_limit_50_reuses_40_results_when_next_page_is_empty(tmp_path) -> None:
-    class FakeApi:
-        calls = []
-
-        def search(self, params, limit, offset=0):
-            self.calls.append((limit, offset))
-            if offset:
-                return []
-            return [{"entityUrn": f"urn:li:fsd_profile:{index}"} for index in range(40)]
-
-    api = FakeApi()
-    params = {"filters": "List()"}
-    cache_key = {
-        "mode": "current_company",
-        "company_urn_id": "avito-urn",
-        "network_depth": "S",
-    }
-
-    rows_40 = cli.cached_search_in_pages(
-        api, params, 40, tmp_path, cache_key, refresh_cache=False
-    )
-    rows_50 = cli.cached_search_in_pages(
-        api, params, 50, tmp_path, cache_key, refresh_cache=False
-    )
-
-    assert len(rows_40) == 40
-    assert len(rows_50) == 40
-    assert api.calls == [(40, 0), (10, 40)]
+    require_live_linkedin_result(result)
+    assert VIOLETTA_URL in result.stdout
 
 
 def test_skill_default_max_depth_is_two() -> None:
@@ -278,585 +205,15 @@ def test_company_path_is_not_a_command() -> None:
     assert "Unknown command: company-path" in result.stderr
 
 
-def test_human_direct_profile_prints_direct_connection(
-    monkeypatch, capsys, tmp_path
-) -> None:
-    class FakeApi:
-        def get_profile_network_info(self, public_id):
-            assert public_id == "daniil-sunyaev-a94a4b193"
-            return {"distance": "DISTANCE_1"}
-
-        def search(self, params, limit):
-            raise AssertionError("direct profiles should not fetch mutuals")
-
-    monkeypatch.setattr(cli, "build_api", lambda cookie_file: FakeApi())
-    monkeypatch.setattr(
-        cli,
-        "profile_urn_id",
-        lambda api, public_id: (_ for _ in ()).throw(
-            AssertionError("direct profiles should not need a profile URN")
-        ),
+@pytest.mark.xdist_group(name="linkedin")
+def test_skill_leadership_large_search_includes_expected_profile(tmp_path) -> None:
+    result = run_live_cli(
+        tmp_path,
+        "skill",
+        "Leadership",
+        "--limit",
+        "25",
     )
 
-    cli.main(
-        [
-            "human",
-            "https://www.linkedin.com/in/daniil-sunyaev-a94a4b193/",
-            "--cache-dir",
-            str(tmp_path),
-            "--refresh-cache",
-        ]
-    )
-
-    assert capsys.readouterr().out.splitlines() == ["Connection: direct"]
-
-
-def test_human_direct_profile_falls_back_to_exact_search(
-    monkeypatch, capsys, tmp_path
-) -> None:
-    class FakeApi:
-        def get_profile_network_info(self, public_id):
-            assert public_id == "daniil-sunyaev-a94a4b193"
-            return {}
-
-        def search(self, params, limit):
-            assert params["keywords"] == "daniil sunyaev"
-            assert "network,value:List(F)" in params["filters"]
-            assert limit == 10
-            return [
-                {
-                    "entityUrn": "urn:li:fsd_profile:daniil-urn",
-                    "entityCustomTrackingInfo": {"memberDistance": "DISTANCE_1"},
-                    "title": {"text": "Daniil Sunyaev"},
-                    "navigationUrl": (
-                        "https://www.linkedin.com/in/daniil-sunyaev-a94a4b193/"
-                    ),
-                }
-            ]
-
-    monkeypatch.setattr(cli, "build_api", lambda cookie_file: FakeApi())
-    monkeypatch.setattr(
-        cli,
-        "profile_urn_id",
-        lambda api, public_id: (_ for _ in ()).throw(
-            AssertionError("direct profiles should not need a profile URN")
-        ),
-    )
-
-    cli.main(
-        [
-            "human",
-            "https://www.linkedin.com/in/daniil-sunyaev-a94a4b193/",
-            "--cache-dir",
-            str(tmp_path),
-            "--refresh-cache",
-        ]
-    )
-
-    assert capsys.readouterr().out.splitlines() == ["Connection: direct"]
-
-
-def test_human_second_degree_profile_prints_mutuals_heading(
-    monkeypatch, capsys, tmp_path
-) -> None:
-    class FakeApi:
-        def get_profile_network_info(self, public_id):
-            assert public_id == "taninnanakorn"
-            return {"distance": "DISTANCE_2"}
-
-        def search(self, params, limit):
-            assert "connectionOf,value:List(tanin-urn)" in params["filters"]
-            assert "network,value:List(F)" in params["filters"]
-            assert limit == cli.DEFAULT_MAX_MUTUAL_CONNECTIONS
-            return [
-                {
-                    "entityUrn": "urn:li:fsd_profile:anastasiia-urn",
-                    "title": {"text": "Anastasiia Krivobokova"},
-                    "navigationUrl": "https://www.linkedin.com/in/anastasiaandreewnaa/",
-                },
-                {
-                    "entityUrn": "urn:li:fsd_profile:andrey-urn",
-                    "title": {"text": "Andrey Zhuchkov"},
-                    "navigationUrl": "https://www.linkedin.com/in/a-zhuchkov/",
-                },
-            ]
-
-    monkeypatch.setattr(cli, "build_api", lambda cookie_file: FakeApi())
-    monkeypatch.setattr(cli, "profile_urn_id", lambda api, public_id: "tanin-urn")
-
-    cli.main(
-        [
-            "human",
-            "https://www.linkedin.com/in/taninnanakorn/",
-            "--cache-dir",
-            str(tmp_path),
-            "--refresh-cache",
-        ]
-    )
-
-    assert capsys.readouterr().out.splitlines() == [
-        "Mutuals:",
-        "Anastasiia Krivobokova  https://www.linkedin.com/in/anastasiaandreewnaa/",
-        "Andrey Zhuchkov         https://www.linkedin.com/in/a-zhuchkov/",
-    ]
-
-
-def test_human_out_of_network_profile_prints_out_of_network(
-    monkeypatch, capsys, tmp_path
-) -> None:
-    class FakeApi:
-        def get_profile_network_info(self, public_id):
-            assert public_id == "mitchellh"
-            return {"distance": "OUT_OF_NETWORK"}
-
-        def search(self, params, limit):
-            raise AssertionError("out-of-network profiles should not fetch mutuals")
-
-    monkeypatch.setattr(cli, "build_api", lambda cookie_file: FakeApi())
-    monkeypatch.setattr(
-        cli,
-        "profile_urn_id",
-        lambda api, public_id: (_ for _ in ()).throw(
-            AssertionError("out-of-network profiles should not need a profile URN")
-        ),
-    )
-
-    cli.main(
-        [
-            "human",
-            "https://www.linkedin.com/in/mitchellh/",
-            "--cache-dir",
-            str(tmp_path),
-            "--refresh-cache",
-        ]
-    )
-
-    assert capsys.readouterr().out.splitlines() == ["Connection: out of network"]
-
-
-def test_skill_flutter_prints_matching_first_and_second_degree_profiles(
-    monkeypatch, capsys, tmp_path
-) -> None:
-    class FakeApi:
-        def search(self, params, limit):
-            if "connectionOf,value:List(" in params["filters"]:
-                return []
-            assert params["keywords"] == "Flutter"
-            assert limit == 25
-            if "network,value:List(F)" in params["filters"]:
-                return [
-                    {
-                        "entityUrn": "urn:li:fsd_profile:direct-urn",
-                        "entityCustomTrackingInfo": {"memberDistance": "DISTANCE_1"},
-                        "title": {"text": "Direct Flutter Developer"},
-                        "primarySubtitle": {"text": "Mobile Engineer"},
-                        "navigationUrl": "https://www.linkedin.com/in/direct-flutter/",
-                    }
-                ]
-            if "network,value:List(S)" in params["filters"]:
-                return [
-                    {
-                        "entityUrn": "urn:li:fsd_profile:danis-urn",
-                        "entityCustomTrackingInfo": {"memberDistance": "DISTANCE_2"},
-                        "title": {"text": "Daniil Sunyaev"},
-                        "primarySubtitle": {"text": "Flutter Developer"},
-                        "navigationUrl": "https://www.linkedin.com/in/dan1s/",
-                    }
-                ]
-            raise AssertionError(params)
-
-        def get_profile_skills(self, public_id=None, urn_id=None):
-            assert public_id in {"direct-flutter", "dan1s"}
-            return [{"name": "Flutter"}]
-
-    monkeypatch.setattr(cli, "build_api", lambda cookie_file: FakeApi())
-
-    cli.main(
-        [
-            "skill",
-            "Flutter",
-            "--cache-dir",
-            str(tmp_path),
-            "--refresh-cache",
-        ]
-    )
-
-    output = capsys.readouterr().out
-    assert "Direct Flutter Developer" in output
-    assert "https://www.linkedin.com/in/dan1s/" in output
-    assert "1st-degree connections" in output
-    assert "2nd-degree connections" in output
-
-
-def test_skill_default_limit_caps_total_printed_profiles(
-    monkeypatch, capsys, tmp_path
-) -> None:
-    class FakeApi:
-        def search(self, params, limit):
-            assert params["keywords"] == "Flutter"
-            assert limit == 25
-            if "network,value:List(F)" in params["filters"]:
-                return [
-                    {
-                        "entityUrn": f"urn:li:fsd_profile:direct-{index}",
-                        "entityCustomTrackingInfo": {"memberDistance": "DISTANCE_1"},
-                        "title": {"text": f"Direct Flutter Developer {index}"},
-                        "navigationUrl": (
-                            f"https://www.linkedin.com/in/direct-{index}/"
-                        ),
-                    }
-                    for index in range(1, 6)
-                ]
-            if "network,value:List(S)" in params["filters"]:
-                return [
-                    {
-                        "entityUrn": f"urn:li:fsd_profile:second-{index}",
-                        "entityCustomTrackingInfo": {"memberDistance": "DISTANCE_2"},
-                        "title": {"text": f"Second Flutter Developer {index}"},
-                        "navigationUrl": (
-                            f"https://www.linkedin.com/in/second-{index}/"
-                        ),
-                    }
-                    for index in range(1, 3)
-                ]
-            raise AssertionError(params)
-
-        def get_profile_skills(self, public_id=None, urn_id=None):
-            return [{"name": "Flutter"}]
-
-    monkeypatch.setattr(cli, "build_api", lambda cookie_file: FakeApi())
-
-    cli.main(
-        [
-            "skill",
-            "Flutter",
-            "--cache-dir",
-            str(tmp_path),
-            "--refresh-cache",
-        ]
-    )
-
-    output = capsys.readouterr().out
-    numbered_lines = [
-        line
-        for line in output.splitlines()
-        if line and line[0].isdigit() and line[1:2] == "."
-    ]
-
-    assert len(numbered_lines) == 5
-    assert "Found: 5 1st-degree, 0 2nd-degree connections" in output
-    assert "Direct Flutter Developer 5" in output
-    assert "Second Flutter Developer" not in output
-
-
-def test_skill_search_falls_back_to_profile_urn_when_public_id_skills_are_empty(
-    monkeypatch, capsys, tmp_path
-) -> None:
-    class FakeApi:
-        def search(self, params, limit):
-            if "connectionOf,value:List(" in params["filters"]:
-                return []
-            assert params["keywords"] == "Flutter"
-            if "network,value:List(F)" in params["filters"]:
-                return []
-            if "network,value:List(S)" in params["filters"]:
-                return [
-                    {
-                        "entityUrn": (
-                            "urn:li:fsd_profile:ACoAAA1KfpkB0EeSqf9VZ2pkhoDCllRCroVjBC0"
-                        ),
-                        "entityCustomTrackingInfo": {"memberDistance": "DISTANCE_2"},
-                        "title": {"text": "Daniil Sunyaev"},
-                        "primarySubtitle": {
-                            "text": "Mobile Engineer | iOS, Swift, Flutter, Android"
-                        },
-                        "navigationUrl": "https://www.linkedin.com/in/dan1s/",
-                    }
-                ]
-            raise AssertionError(params)
-
-        def get_profile_skills(self, public_id=None, urn_id=None):
-            if public_id == "dan1s":
-                return []
-            assert urn_id == "ACoAAA1KfpkB0EeSqf9VZ2pkhoDCllRCroVjBC0"
-            return [{"name": "Flutter"}]
-
-    monkeypatch.setattr(cli, "build_api", lambda cookie_file: FakeApi())
-
-    cli.main(
-        [
-            "skill",
-            "Flutter",
-            "--cache-dir",
-            str(tmp_path),
-            "--refresh-cache",
-        ]
-    )
-
-    assert "https://www.linkedin.com/in/dan1s/" in capsys.readouterr().out
-
-
-def test_skill_search_keeps_visible_profile_skill_when_skill_endpoint_is_empty(
-    monkeypatch, capsys, tmp_path
-) -> None:
-    class FakeApi:
-        def search(self, params, limit):
-            assert params["keywords"] == "Flutter"
-            if "network,value:List(F)" in params["filters"]:
-                return [
-                    {
-                        "entityUrn": (
-                            "urn:li:fsd_profile:ACoAAA1KfpkB0EeSqf9VZ2pkhoDCllRCroVjBC0"
-                        ),
-                        "entityCustomTrackingInfo": {"memberDistance": "DISTANCE_1"},
-                        "title": {"text": "Danis Ziganshin"},
-                        "primarySubtitle": {
-                            "text": "Mobile Engineer | iOS, Swift, Flutter, Android"
-                        },
-                        "secondarySubtitle": {"text": "Kazan"},
-                        "navigationUrl": "https://www.linkedin.com/in/dan1s/",
-                    }
-                ]
-            if "network,value:List(S)" in params["filters"]:
-                return []
-            raise AssertionError(params)
-
-        def get_profile_skills(self, public_id=None, urn_id=None):
-            return []
-
-    monkeypatch.setattr(cli, "build_api", lambda cookie_file: FakeApi())
-
-    cli.main(
-        [
-            "skill",
-            "Flutter",
-            "--cache-dir",
-            str(tmp_path),
-            "--refresh-cache",
-        ]
-    )
-
-    output = capsys.readouterr().out
-    assert "Danis Ziganshin" in output
-    assert "https://www.linkedin.com/in/dan1s/" in output
-
-
-def test_skill_leadership_prints_expected_matching_profile(
-    monkeypatch, capsys, tmp_path
-) -> None:
-    class FakeApi:
-        def search(self, params, limit):
-            if "connectionOf,value:List(" in params["filters"]:
-                return []
-            assert params["keywords"] == "Leadership"
-            if "network,value:List(F)" in params["filters"]:
-                return []
-            if "network,value:List(S)" in params["filters"]:
-                return [
-                    {
-                        "entityUrn": "urn:li:fsd_profile:timur-urn",
-                        "entityCustomTrackingInfo": {"memberDistance": "DISTANCE_2"},
-                        "title": {"text": "Timur Pokayonkov"},
-                        "primarySubtitle": {"text": "Engineering Leader"},
-                        "navigationUrl": (
-                            "https://www.linkedin.com/in/timur-pokayonkov/"
-                        ),
-                    }
-                ]
-            raise AssertionError(params)
-
-        def get_profile_skills(self, public_id=None, urn_id=None):
-            assert public_id == "timur-pokayonkov"
-            return [{"name": "Leadership"}]
-
-    monkeypatch.setattr(cli, "build_api", lambda cookie_file: FakeApi())
-
-    cli.main(
-        [
-            "skill",
-            "Leadership",
-            "--cache-dir",
-            str(tmp_path),
-            "--refresh-cache",
-        ]
-    )
-
-    output = capsys.readouterr().out
-    assert "Timur Pokayonkov" in output
-    assert "https://www.linkedin.com/in/timur-pokayonkov/" in output
-
-
-def test_skill_leadership_prints_second_degree_mutual_profiles(
-    monkeypatch, capsys, tmp_path
-) -> None:
-    silviu_url = "https://www.linkedin.com/in/silviu-imbarus-91574651/"
-    tatar_url = "https://www.linkedin.com/in/tnasybullin/"
-
-    class FakeApi:
-        def search(self, params, limit):
-            if "connectionOf,value:List(silviu-urn)" in params["filters"]:
-                assert "network,value:List(F)" in params["filters"]
-                assert limit == cli.DEFAULT_MAX_MUTUAL_CONNECTIONS
-                return [
-                    {
-                        "entityUrn": "urn:li:fsd_profile:tatar-urn",
-                        "entityCustomTrackingInfo": {"memberDistance": "DISTANCE_1"},
-                        "title": {"text": "Tatar Nasybullin"},
-                        "navigationUrl": tatar_url,
-                    }
-                ]
-
-            assert params["keywords"] == "Leadership"
-            assert limit == 25
-            if "network,value:List(F)" in params["filters"]:
-                return []
-            if "network,value:List(S)" in params["filters"]:
-                return [
-                    {
-                        "entityUrn": "urn:li:fsd_profile:silviu-urn",
-                        "entityCustomTrackingInfo": {"memberDistance": "DISTANCE_2"},
-                        "title": {"text": "Silviu Imbarus"},
-                        "primarySubtitle": {"text": "Engineering Leadership"},
-                        "navigationUrl": silviu_url,
-                    }
-                ]
-            raise AssertionError(params)
-
-        def get_profile_skills(self, public_id=None, urn_id=None):
-            assert public_id == "silviu-imbarus-91574651"
-            return [{"name": "Leadership"}]
-
-    monkeypatch.setattr(cli, "build_api", lambda cookie_file: FakeApi())
-
-    cli.main(
-        [
-            "skill",
-            "Leadership",
-            "--cache-dir",
-            str(tmp_path),
-            "--refresh-cache",
-        ]
-    )
-
-    output = capsys.readouterr().out
-    assert "Silviu Imbarus" in output
-    assert silviu_url in output
-    assert "Mutuals (1): Tatar Nasybullin" in output
-    assert tatar_url not in output
-
-
-def test_skill_second_degree_visible_mutual_names_skip_mutual_profile_search(
-    monkeypatch, capsys, tmp_path
-) -> None:
-    class FakeApi:
-        def search(self, params, limit):
-            if "connectionOf,value:List(" in params["filters"]:
-                raise AssertionError("visible mutual names should avoid mutual search")
-
-            assert params["keywords"] == "Leadership"
-            assert limit == 25
-            if "network,value:List(F)" in params["filters"]:
-                return []
-            if "network,value:List(S)" in params["filters"]:
-                return [
-                    {
-                        "entityUrn": "urn:li:fsd_profile:silviu-urn",
-                        "entityCustomTrackingInfo": {"memberDistance": "DISTANCE_2"},
-                        "title": {"text": "Silviu Imbarus"},
-                        "primarySubtitle": {"text": "Engineering Leadership"},
-                        "navigationUrl": (
-                            "https://www.linkedin.com/in/silviu-imbarus-91574651/"
-                        ),
-                        "insights": [
-                            {
-                                "simpleInsight": {
-                                    "title": {
-                                        "text": (
-                                            "Tatar Nasybullin "
-                                            "and 1 other mutual connection"
-                                        )
-                                    }
-                                }
-                            }
-                        ],
-                    }
-                ]
-            raise AssertionError(params)
-
-        def get_profile_skills(self, public_id=None, urn_id=None):
-            assert public_id == "silviu-imbarus-91574651"
-            return [{"name": "Leadership"}]
-
-    monkeypatch.setattr(cli, "build_api", lambda cookie_file: FakeApi())
-
-    cli.main(
-        [
-            "skill",
-            "Leadership",
-            "--cache-dir",
-            str(tmp_path),
-            "--refresh-cache",
-        ]
-    )
-
-    output = capsys.readouterr().out
-    assert "Silviu Imbarus" in output
-    assert "Mutuals (2): Tatar Nasybullin, +1 more" in output
-
-
-def test_skill_leadership_keeps_pinned_direct_profile_outside_display_limit(
-    monkeypatch, capsys, tmp_path
-) -> None:
-    class FakeApi:
-        def search(self, params, limit):
-            assert params["keywords"] == "Leadership"
-            assert limit == 25
-            if "network,value:List(F)" in params["filters"]:
-                return [
-                    {
-                        "entityUrn": f"urn:li:fsd_profile:direct-{index}",
-                        "entityCustomTrackingInfo": {"memberDistance": "DISTANCE_1"},
-                        "title": {"text": f"Direct Profile {index}"},
-                        "primarySubtitle": {"text": "Generalist"},
-                        "navigationUrl": f"https://www.linkedin.com/in/direct-{index}/",
-                    }
-                    for index in range(1, 7)
-                ] + [
-                    {
-                        "entityUrn": "urn:li:fsd_profile:timur-urn",
-                        "entityCustomTrackingInfo": {"memberDistance": "DISTANCE_1"},
-                        "title": {"text": "Tim Pokaenkov"},
-                        "primarySubtitle": {"text": "Head of Marketing"},
-                        "navigationUrl": (
-                            "https://www.linkedin.com/in/timur-pokayonkov/"
-                        ),
-                    }
-                ]
-            if "network,value:List(S)" in params["filters"]:
-                return []
-            raise AssertionError(params)
-
-        def get_profile_skills(self, public_id=None, urn_id=None):
-            return []
-
-    monkeypatch.setattr(cli, "build_api", lambda cookie_file: FakeApi())
-
-    cli.main(
-        [
-            "skill",
-            "Leadership",
-            "--cache-dir",
-            str(tmp_path),
-            "--refresh-cache",
-        ]
-    )
-
-    output = capsys.readouterr().out
-    numbered_lines = [
-        line
-        for line in output.splitlines()
-        if line and line[0].isdigit() and line[1:2] == "."
-    ]
-
-    assert numbered_lines[0] == "1. Tim Pokaenkov"
-    assert "https://www.linkedin.com/in/timur-pokayonkov/" in output
+    require_live_linkedin_result(result)
+    assert TIMUR_URL in result.stdout

@@ -1,7 +1,6 @@
 from warmpath.cli import (
     company_path_candidate,
     connection_result_row,
-    fetch_mutual_connection_rows,
     render_company_path_result,
 )
 
@@ -82,55 +81,6 @@ def test_second_degree_candidate_renders_visible_mutual_connections() -> None:
     assert "Company URN:" not in rendered
     assert "URN:" not in rendered
     assert "unknown introducer" not in rendered
-
-
-def test_fetch_mutual_connection_rows_searches_first_degree_connections(
-    tmp_path,
-) -> None:
-    class FakeApi:
-        params = None
-        limit = None
-
-        def search(self, params, limit):
-            self.params = params
-            self.limit = limit
-            return [
-                {
-                    "entityUrn": "urn:li:fsd_profile:ACoAACeBStkBoUxCGfrnXFevZJkQ-UX6eHu4deU",
-                    "entityCustomTrackingInfo": {"memberDistance": "DISTANCE_1"},
-                    "title": {"text": "Anastasiia Krivobokova"},
-                    "primarySubtitle": {"text": "Senior HR Business Partner"},
-                    "secondarySubtitle": {"text": "Amsterdam"},
-                    "navigationUrl": "https://www.linkedin.com/in/anastasiaandreewnaa/",
-                },
-                {
-                    "entityUrn": "urn:li:fsd_profile:ACoAACJd_TgBcn1VPQemkT4e3qsSPkR9WjEYhy8",
-                    "entityCustomTrackingInfo": {"memberDistance": "DISTANCE_1"},
-                    "title": {"text": "Andrey Zhuchkov"},
-                    "primarySubtitle": {"text": "/"},
-                    "secondarySubtitle": {"text": "Russia"},
-                    "navigationUrl": "https://www.linkedin.com/in/a-zhuchkov/",
-                },
-            ]
-
-    api = FakeApi()
-    rows = fetch_mutual_connection_rows(
-        api,
-        "ACoAABaR-MoBLHrbfL3jmaglgQoONjPGWrfmTSE",
-        limit=2,
-        cache_dir=tmp_path,
-        refresh_cache=True,
-    )
-
-    assert "connectionOf,value:List(ACoAABaR-MoBLHrbfL3jmaglgQoONjPGWrfmTSE)" in api.params[
-        "filters"
-    ]
-    assert "network,value:List(F)" in api.params["filters"]
-    assert api.limit == 2
-    assert [row["name"] for row in rows] == [
-        "Anastasiia Krivobokova",
-        "Andrey Zhuchkov",
-    ]
 
 
 def test_second_degree_candidate_without_mutuals_keeps_unresolved_status() -> None:

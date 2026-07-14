@@ -1,21 +1,15 @@
 [project]
 name = "warmpath"
-version = "0.1.0"
+version = "0.2.0"
 description = "Local LinkedIn visible-connections scraper."
 requires-python = ">=3.10"
-dependencies = [
-    "open-linkedin-api>=2.3.1",
-]
+dependencies = ["open-linkedin-api>=2.3.1"]
 
 [dependency-groups]
-dev = [
-    "pytest>=8.4.1",
-    "pytest-xdist>=3.8.0",
-    "pyright>=1.1.411",
-]
+dev = ["pytest>=8.4.1", "pytest-xdist>=3.8.0", "pyright>=1.1.411"]
 
 [tool.pytest.ini_options]
-addopts = "-n auto"
+addopts = "-n auto --dist loadgroup"
 testpaths = ["tests"]
 
 [project.scripts]
