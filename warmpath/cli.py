@@ -521,6 +521,22 @@ def candidate_score(candidate: dict[str, Any]) -> tuple[int, int]:
     return degree, -boost
 
 
+def candidate_matches_filter(candidate: dict[str, Any], query: str) -> bool:
+    normalized_query = normalized_skill_text(query)
+    if not normalized_query:
+        return True
+
+    target = candidate.get("target")
+    if not isinstance(target, dict):
+        return False
+
+    return any(
+        normalized_query in normalized_skill_text(value)
+        for key in ("name", "jobtitle", "location")
+        if isinstance(value := target.get(key), str)
+    )
+
+
 def person_target(row: dict[str, Any]) -> dict[str, str | None]:
     return {
         "urn_id": row.get("urn_id"),
@@ -1090,6 +1106,7 @@ def find_company_path_candidates(
     company_input: str,
     max_degree: int,
     limit: int,
+    filter_query: str | None,
     max_targets: int,
     cache_dir: Path,
     refresh_cache: bool,
@@ -1133,6 +1150,13 @@ def find_company_path_candidates(
             seen.add(dedupe_key)
             candidates.append(candidate)
 
+    if filter_query is not None:
+        candidates = [
+            candidate
+            for candidate in candidates
+            if candidate_matches_filter(candidate, filter_query)
+        ]
+
     candidates.sort(key=candidate_score)
     candidates = candidates[:limit]
     direct_count = sum(1 for candidate in candidates if candidate["degree"] == 1)
@@ -1147,6 +1171,7 @@ def find_company_path_candidates(
             "company": company_input,
             "max_degree": max_degree,
             "limit": limit,
+            "filter": filter_query,
             "max_targets": max_targets,
         },
         "company": company,
@@ -1236,6 +1261,17 @@ def render_company_path_result(result: dict[str, Any]) -> str:
 
     candidates = result.get("candidates")
     if not isinstance(candidates, list) or not candidates:
+        filter_query = query.get("filter")
+        if isinstance(filter_query, str):
+            lines.extend(
+                [
+                    "",
+                    f"No candidates matched filter: {filter_query}",
+                    "Try another --filter query or increase --max-targets.",
+                ]
+            )
+            return "\n".join(lines)
+
         lines.extend(
             [
                 "",
@@ -1614,6 +1650,7 @@ def run_company_command(args: argparse.Namespace) -> None:
         company_input=args.company,
         max_degree=args.max_degree,
         limit=args.limit,
+        filter_query=args.filter,
         max_targets=max_targets,
         cache_dir=resolve_path(args.cache_dir),
         refresh_cache=args.refresh_cache,
@@ -1644,6 +1681,7 @@ def parse_company_args(argv: list[str]) -> argparse.Namespace:
         epilog="""examples:
   uvx warmpath company https://www.linkedin.com/company/ozon-tech
   uvx warmpath company "Ozon Tech" --max-degree 2 --limit 5
+  uvx warmpath company Avito --limit 400 --filter Android
 
 cookies:
   Paste Netscape cookies.txt from Get cookies.txt LOCALLY into ~/.config/warmpath/linkedin.cookies,
@@ -1663,6 +1701,11 @@ cookies:
         type=int,
         default=DEFAULT_COMPANY_PATH_LIMIT,
         help="Maximum candidates to print. Default: 5.",
+    )
+    parser.add_argument(
+        "--filter",
+        metavar="QUERY",
+        help="Only print candidates whose name, role, or location contains QUERY.",
     )
     parser.add_argument(
         "--max-targets",

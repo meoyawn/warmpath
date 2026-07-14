@@ -1,8 +1,31 @@
 from warmpath.cli import (
+    candidate_matches_filter,
     company_path_candidate,
     connection_result_row,
     render_company_path_result,
 )
+
+
+def test_candidate_filter_matches_visible_profile_fields_case_insensitively() -> None:
+    candidate = {
+        "target": {
+            "name": "Ada Lovelace",
+            "jobtitle": "Senior Android Developer",
+            "location": "London, United Kingdom",
+            "url": "https://www.linkedin.com/in/ada-lovelace/",
+        }
+    }
+
+    assert candidate_matches_filter(candidate, "android developer")
+    assert candidate_matches_filter(candidate, "ADA")
+    assert candidate_matches_filter(candidate, "united kingdom")
+    assert not candidate_matches_filter(candidate, "iOS")
+
+
+def test_candidate_filter_normalizes_whitespace() -> None:
+    candidate = {"target": {"jobtitle": "Senior Android   Developer"}}
+
+    assert candidate_matches_filter(candidate, "android developer")
 
 
 def test_connection_result_row_extracts_visible_mutual_connection_names() -> None:

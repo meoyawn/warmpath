@@ -139,6 +139,12 @@ def test_company_default_limit_is_five() -> None:
     assert args.limit == 5
 
 
+def test_company_accepts_filter_query() -> None:
+    args = cli.parse_company_args(["Avito", "--filter", "Android Developer"])
+
+    assert args.filter == "Android Developer"
+
+
 def test_default_paths_use_user_directories() -> None:
     args = cli.parse_company_args(["https://www.linkedin.com/company/binance/"])
 
