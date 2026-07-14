@@ -31,7 +31,7 @@ tasks:
     cmd: uv tree --outdated
 
   release:
-    desc: Check, build, publish, and smoke-test a version already committed and tagged as vX.Y.Z.
+    desc: Check, build, tag, publish, and smoke-test a committed version.
     deps:
       - check
     cmd: scripts/release.sh

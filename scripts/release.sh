@@ -31,9 +31,14 @@ if test -n "$(git status --porcelain --untracked-files=all)"; then
   exit 1
 fi
 
-git rev-parse --verify "$tag" >/dev/null
-if ! test "$(git rev-parse HEAD)" = "$(git rev-list -n 1 "$tag")"; then
-  echo "HEAD must be tagged as $tag before publishing." >&2
+if git show-ref --verify --quiet "refs/tags/$tag"; then
+  echo "Tag $tag already exists locally." >&2
+  exit 1
+fi
+
+remote_tag="$(git ls-remote --tags origin "refs/tags/$tag")"
+if test -n "$remote_tag"; then
+  echo "Tag $tag already exists on origin." >&2
   exit 1
 fi
 
@@ -69,6 +74,10 @@ if uv run python -m zipfile -l "$wheel" | grep -q '\.uv-cache'; then
   echo ".uv-cache leaked into wheel." >&2
   exit 1
 fi
+
+echo "Tagging ${PACKAGE} ${version}"
+git tag -a "$tag" -m "${PACKAGE} ${version}"
+git push origin "$tag"
 
 echo "Publishing ${PACKAGE} ${version}"
 UV_PUBLISH_TOKEN="$token" uv publish
