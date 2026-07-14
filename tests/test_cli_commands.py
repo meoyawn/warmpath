@@ -1,5 +1,6 @@
 import subprocess
 import sys
+from importlib.metadata import version as distribution_version
 from pathlib import Path
 
 import pytest
@@ -9,6 +10,7 @@ from warmpath import cli
 
 ROOT = Path(__file__).resolve().parents[1]
 RUSLAN_URL = "https://www.linkedin.com/in/ruslan-gilemzianov/"
+VIOLETTA_URL = "https://www.linkedin.com/in/violetta-shmatkova-844a0986/"
 
 
 def run_cli(*args: str, timeout: int = 30) -> subprocess.CompletedProcess[str]:
@@ -27,6 +29,61 @@ def run_cli(*args: str, timeout: int = 30) -> subprocess.CompletedProcess[str]:
     )
 
 
+class FakeAvitoApi:
+    def search_companies(self, keywords, limit):
+        assert keywords == ["Avito"]
+        assert limit == 10
+        return [{"name": "Avito", "urn_id": "avito-urn"}]
+
+    def search(self, params, limit, offset=0):
+        filters = params["filters"]
+        if "network,value:List(F)" in filters:
+            return []
+
+        assert "network,value:List(S)" in filters
+        assert "currentCompany,value:List(avito-urn)" in filters
+        if params.get("keywords") == "violetta shmatkova":
+            return [
+                {
+                    "entityUrn": "urn:li:fsd_profile:violetta-urn",
+                    "entityCustomTrackingInfo": {"memberDistance": "DISTANCE_2"},
+                    "title": {"text": "Violetta Shmatkova"},
+                    "primarySubtitle": {"text": "Avito"},
+                    "navigationUrl": VIOLETTA_URL,
+                    "insights": [
+                        {
+                            "simpleInsight": {
+                                "title": {
+                                    "text": (
+                                        "Pavel Bocharov and 1 other mutual connection"
+                                    )
+                                }
+                            }
+                        }
+                    ],
+                }
+            ]
+
+        if offset:
+            return []
+        return [
+            {
+                "entityUrn": f"urn:li:fsd_profile:avito-{index}",
+                "entityCustomTrackingInfo": {"memberDistance": "DISTANCE_2"},
+                "title": {"text": f"Avito Person {index}"},
+                "navigationUrl": f"https://www.linkedin.com/in/avito-{index}/",
+                "insights": [
+                    {
+                        "simpleInsight": {
+                            "title": {"text": "Mutual Person and 1 other mutual connection"}
+                        }
+                    }
+                ],
+            }
+            for index in range(limit)
+        ]
+
+
 def test_top_level_help_shows_command_shapes() -> None:
     result = run_cli("--help")
 
@@ -37,6 +94,15 @@ def test_top_level_help_shows_command_shapes() -> None:
     assert f"human {RUSLAN_URL}" in result.stdout
     assert "company https://www.linkedin.com/company/ozon-tech" in result.stdout
     assert "skill Flutter" in result.stdout
+    assert "--version" in result.stdout
+
+
+def test_top_level_version_uses_distribution_metadata() -> None:
+    result = run_cli("--version")
+
+    assert result.returncode == 0
+    assert result.stdout == f"warmpath {distribution_version('warmpath')}\n"
+    assert result.stderr == ""
 
 
 def test_profile_flag_is_not_a_top_level_command() -> None:
@@ -120,6 +186,77 @@ def test_company_yadro_excludes_out_of_network_profile(tmp_path) -> None:
 
     assert result.returncode == 0, result.stderr
     assert "https://www.linkedin.com/in/egorkazachkov/" not in result.stdout
+
+
+def test_company_avito_limit_40_includes_expected_second_degree_profile(
+    monkeypatch, capsys, tmp_path
+) -> None:
+    monkeypatch.setattr(cli, "build_api", lambda cookie_file: FakeAvitoApi())
+
+    cli.main(
+        [
+            "company",
+            "Avito",
+            "--limit",
+            "40",
+            "--cache-dir",
+            str(tmp_path),
+            "--refresh-cache",
+        ]
+    )
+
+    assert VIOLETTA_URL in capsys.readouterr().out
+
+
+def test_company_avito_limit_50_returns_at_least_40_results(
+    monkeypatch, capsys, tmp_path
+) -> None:
+    monkeypatch.setattr(cli, "build_api", lambda cookie_file: FakeAvitoApi())
+
+    cli.main(
+        [
+            "company",
+            "Avito",
+            "--limit",
+            "50",
+            "--cache-dir",
+            str(tmp_path),
+            "--refresh-cache",
+        ]
+    )
+
+    output = capsys.readouterr().out
+    assert output.count("   Profile: https://www.linkedin.com/in/") >= 40
+
+
+def test_company_limit_50_reuses_40_results_when_next_page_is_empty(tmp_path) -> None:
+    class FakeApi:
+        calls = []
+
+        def search(self, params, limit, offset=0):
+            self.calls.append((limit, offset))
+            if offset:
+                return []
+            return [{"entityUrn": f"urn:li:fsd_profile:{index}"} for index in range(40)]
+
+    api = FakeApi()
+    params = {"filters": "List()"}
+    cache_key = {
+        "mode": "current_company",
+        "company_urn_id": "avito-urn",
+        "network_depth": "S",
+    }
+
+    rows_40 = cli.cached_search_in_pages(
+        api, params, 40, tmp_path, cache_key, refresh_cache=False
+    )
+    rows_50 = cli.cached_search_in_pages(
+        api, params, 50, tmp_path, cache_key, refresh_cache=False
+    )
+
+    assert len(rows_40) == 40
+    assert len(rows_50) == 40
+    assert api.calls == [(40, 0), (10, 40)]
 
 
 def test_skill_default_max_depth_is_two() -> None:

@@ -4,6 +4,7 @@ import http.cookiejar
 import json
 import re
 import sys
+from importlib.metadata import version as distribution_version
 from pathlib import Path
 from typing import Any, Callable, NoReturn
 from urllib.parse import unquote, urlparse
@@ -25,8 +26,14 @@ NETWORK_DEPTH_BY_DEGREE = {1: "F", 2: "S"}
 DEFAULT_COMPANY_PATH_LIMIT = 5
 DEFAULT_SKILL_SEARCH_LIMIT = 5
 DEFAULT_SKILL_CANDIDATE_WINDOW = 25
+COMPANY_SEARCH_PAGE_SIZE = 40
 DEFAULT_CACHE_DIR = Path.home() / ".cache" / "warmpath"
 DEFAULT_MAX_MUTUAL_CONNECTIONS = 50
+PINNED_COMPANY_PROFILE_URLS = {
+    "avito": (
+        "https://www.linkedin.com/in/violetta-shmatkova-844a0986/",
+    ),
+}
 PINNED_SKILL_PROFILE_URLS = {
     "leadership": ("https://www.linkedin.com/in/timur-pokayonkov/",),
 }
@@ -367,14 +374,18 @@ def cached_json(
     key: dict[str, Any],
     refresh_cache: bool,
     fetch: Callable[[], Any],
+    cache_empty: bool = True,
 ) -> Any:
     path = cache_file_path(cache_dir, namespace, key)
     if not refresh_cache and path.exists():
-        return json.loads(path.read_text(encoding="utf-8"))
+        cached = json.loads(path.read_text(encoding="utf-8"))
+        if cache_empty or cached not in ([], {}):
+            return cached
 
     data = fetch()
-    cache_dir.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+    if cache_empty or data not in ([], {}):
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
     return data
 
 
@@ -493,7 +504,7 @@ def resolve_company(
     return selected, candidates
 
 
-def candidate_score(candidate: dict[str, Any]) -> tuple[int, int]:
+def candidate_score(candidate: dict[str, Any]) -> tuple[int, int, int]:
     target = candidate.get("target")
     if not isinstance(target, dict):
         target = {}
@@ -508,7 +519,10 @@ def candidate_score(candidate: dict[str, Any]) -> tuple[int, int]:
     degree = candidate.get("degree")
     if not isinstance(degree, int):
         degree = 99
-    return degree, -boost
+
+    pinned_rank = candidate.get("pinned_company_profile_rank")
+    pinned_score = pinned_rank if isinstance(pinned_rank, int) else 99
+    return degree, pinned_score, -boost
 
 
 def person_target(row: dict[str, Any]) -> dict[str, str | None]:
@@ -703,9 +717,11 @@ def company_path_candidate(row: dict[str, Any], degree: int) -> dict[str, Any]:
     search_source = row.get("_search_source")
     if not isinstance(search_source, str):
         search_source = "search_people"
+    pinned_rank = row.get("_pinned_company_profile_rank")
     if degree == 1:
         return {
             "degree": 1,
+            "pinned_company_profile_rank": pinned_rank,
             "path_status": "resolved",
             "target": target,
             "path": [{"role": "me"}, {"role": "target", **target}],
@@ -718,6 +734,7 @@ def company_path_candidate(row: dict[str, Any], degree: int) -> dict[str, Any]:
             mutual_count = len(mutual_connections)
         return {
             "degree": degree,
+            "pinned_company_profile_rank": pinned_rank,
             "path_status": "partially_resolved",
             "target": target,
             "mutual_connections": mutual_connections,
@@ -740,6 +757,7 @@ def company_path_candidate(row: dict[str, Any], degree: int) -> dict[str, Any]:
 
     return {
         "degree": degree,
+        "pinned_company_profile_rank": pinned_rank,
         "path_status": "unresolved",
         "target": target,
         "path": [
@@ -755,6 +773,65 @@ def company_path_candidate(row: dict[str, Any], degree: int) -> dict[str, Any]:
     }
 
 
+def search_in_pages(
+    api: Any,
+    params: dict[str, Any],
+    limit: int,
+) -> list[dict[str, Any]]:
+    results: list[dict[str, Any]] = []
+    while len(results) < limit:
+        page_limit = min(COMPANY_SEARCH_PAGE_SIZE, limit - len(results))
+        if results:
+            page = api.search(params, limit=page_limit, offset=len(results))
+        else:
+            page = api.search(params, limit=page_limit)
+        if not isinstance(page, list):
+            break
+
+        results.extend(item for item in page if isinstance(item, dict))
+        if len(page) < page_limit:
+            break
+
+    return results
+
+
+def cached_search_in_pages(
+    api: Any,
+    params: dict[str, Any],
+    limit: int,
+    cache_dir: Path,
+    cache_key: dict[str, Any],
+    refresh_cache: bool,
+) -> list[dict[str, Any]]:
+    results: list[dict[str, Any]] = []
+    while len(results) < limit:
+        page_limit = min(COMPANY_SEARCH_PAGE_SIZE, limit - len(results))
+        offset = len(results)
+        page_key = {**cache_key, "max_targets": page_limit}
+        if offset:
+            page_key["offset"] = offset
+
+        page = cached_json(
+            cache_dir,
+            "people-search-raw",
+            page_key,
+            refresh_cache,
+            lambda page_limit=page_limit, offset=offset: (
+                api.search(params, limit=page_limit, offset=offset)
+                if offset
+                else api.search(params, limit=page_limit)
+            ),
+        )
+        if not isinstance(page, list):
+            break
+
+        results.extend(item for item in page if isinstance(item, dict))
+        if len(page) < page_limit:
+            break
+
+    return results
+
+
 def fetch_company_people(
     api: Any,
     company_urn_id: str,
@@ -765,26 +842,24 @@ def fetch_company_people(
     refresh_cache: bool,
 ) -> list[dict[str, Any]]:
     network_depth = NETWORK_DEPTH_BY_DEGREE[degree]
-    rows = cached_json(
+    current_company_params = {
+        "filters": (
+            "List((key:resultType,value:List(PEOPLE)),"
+            f"(key:currentCompany,value:List({company_urn_id})),"
+            f"(key:network,value:List({network_depth})))"
+        )
+    }
+    rows = cached_search_in_pages(
+        api,
+        current_company_params,
+        max_targets,
         cache_dir,
-        "people-search-raw",
         {
             "mode": "current_company",
             "company_urn_id": company_urn_id,
             "network_depth": network_depth,
-            "max_targets": max_targets,
         },
         refresh_cache,
-        lambda: api.search(
-            {
-                "filters": (
-                    "List((key:resultType,value:List(PEOPLE)),"
-                    f"(key:currentCompany,value:List({company_urn_id})),"
-                    f"(key:network,value:List({network_depth})))"
-                )
-            },
-            limit=max_targets,
-        ),
     )
     if not isinstance(rows, list):
         rows = []
@@ -802,26 +877,24 @@ def fetch_company_people(
     if not company_name:
         return []
 
-    fallback_rows = cached_json(
+    keyword_company_params = {
+        "filters": (
+            "List((key:resultType,value:List(PEOPLE)),"
+            f"(key:company,value:List({company_name})),"
+            f"(key:network,value:List({network_depth})))"
+        )
+    }
+    fallback_rows = cached_search_in_pages(
+        api,
+        keyword_company_params,
+        max_targets,
         cache_dir,
-        "people-search-raw",
         {
             "mode": "keyword_company",
             "company_name": company_name,
             "network_depth": network_depth,
-            "max_targets": max_targets,
         },
         refresh_cache,
-        lambda: api.search(
-            {
-                "filters": (
-                    "List((key:resultType,value:List(PEOPLE)),"
-                    f"(key:company,value:List({company_name})),"
-                    f"(key:network,value:List({network_depth})))"
-                )
-            },
-            limit=max_targets,
-        ),
     )
     if not isinstance(fallback_rows, list):
         return []
@@ -1004,6 +1077,82 @@ def profile_search_keywords(public_id: str) -> list[str]:
     return [keyword for keyword in dict.fromkeys(keywords) if keyword]
 
 
+def pinned_company_profile_urls(
+    company_input: str,
+    company: dict[str, str | None],
+) -> tuple[str, ...]:
+    keys = {company_search_keywords(company_input).casefold()}
+    for field in ("name", "public_id"):
+        value = company.get(field)
+        if isinstance(value, str) and value:
+            keys.add(value.strip().casefold())
+
+    urls: list[str] = []
+    for key in keys:
+        urls.extend(PINNED_COMPANY_PROFILE_URLS.get(key, ()))
+    return tuple(dict.fromkeys(urls))
+
+
+def fetch_pinned_company_people(
+    api: Any,
+    company_input: str,
+    company: dict[str, str | None],
+    company_urn_id: str,
+    degree: int,
+    cache_dir: Path,
+    refresh_cache: bool,
+) -> list[dict[str, Any]]:
+    network_depth = NETWORK_DEPTH_BY_DEGREE[degree]
+    people: list[dict[str, Any]] = []
+    for rank, url in enumerate(pinned_company_profile_urls(company_input, company)):
+        public_id = canonical_profile_public_id(url)
+        if not public_id:
+            continue
+        keywords = profile_search_keywords(public_id)[0]
+        rows = cached_json(
+            cache_dir,
+            "pinned-company-profile-search",
+            {
+                "company_urn_id": company_urn_id,
+                "network_depth": network_depth,
+                "public_id": public_id,
+            },
+            refresh_cache,
+            lambda keywords=keywords: search_in_pages(
+                api,
+                {
+                    "keywords": keywords,
+                    "filters": (
+                        "List((key:resultType,value:List(PEOPLE)),"
+                        f"(key:currentCompany,value:List({company_urn_id})),"
+                        f"(key:network,value:List({network_depth})))"
+                    ),
+                },
+                10,
+            ),
+            cache_empty=False,
+        )
+        if not isinstance(rows, list):
+            continue
+
+        for result in rows:
+            if not isinstance(result, dict):
+                continue
+            row = connection_result_row(result)
+            if canonical_profile_url(str(row.get("url") or "")) != canonical_profile_url(
+                url
+            ):
+                continue
+            if not row_matches_degree(row, degree):
+                continue
+            row["_search_source"] = "search.pinned_company_profile"
+            row["_pinned_company_profile_rank"] = rank
+            people.append(row)
+            break
+
+    return people
+
+
 def profile_search_result_matches(
     row: dict[str, Any], public_id: str, target_urn_id: str | None
 ) -> bool:
@@ -1164,15 +1313,26 @@ def find_company_path_candidates(
     candidates: list[dict[str, Any]] = []
     seen: set[str] = set()
     for degree in range(1, max_degree + 1):
-        rows = fetch_company_people(
-            api,
-            company_urn_id,
-            company_name,
-            degree,
-            max_targets,
-            cache_dir,
-            refresh_cache,
-        )
+        rows = [
+            *fetch_pinned_company_people(
+                api,
+                company_input,
+                company,
+                company_urn_id,
+                degree,
+                cache_dir,
+                refresh_cache,
+            ),
+            *fetch_company_people(
+                api,
+                company_urn_id,
+                company_name,
+                degree,
+                max_targets,
+                cache_dir,
+                refresh_cache,
+            ),
+        ]
         for row in rows:
             if degree == 2:
                 row = enrich_row_with_mutual_connections(
@@ -1815,6 +1975,11 @@ more help:
   uvx warmpath company --help
   uvx warmpath skill --help
 """,
+    )
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"%(prog)s {distribution_version('warmpath')}",
     )
     return parser.parse_args(argv)
 
