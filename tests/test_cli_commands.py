@@ -4,9 +4,8 @@ from importlib.metadata import version as distribution_version
 from pathlib import Path
 
 import pytest
-from requests import Request, Session
 
-from warmpath import cli
+from warmpath import auth, cli
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -31,24 +30,19 @@ def run_cli(*args: str, timeout: int = 30) -> subprocess.CompletedProcess[str]:
     )
 
 
-def linkedin_cookie_file() -> Path:
-    cookie_file = cli.DEFAULT_COOKIE_FILE
-    if not cookie_file.exists() or cookie_file.stat().st_size == 0:
-        pytest.skip("LinkedIn cookies are required for live integration tests")
-    return cookie_file
-
-
 def run_live_cli(
     tmp_path: Path,
     *args: str,
     timeout: int = 180,
 ) -> subprocess.CompletedProcess[str]:
+    if not auth.auth_store_path().exists():
+        pytest.skip("Run warmpath auth import --browser <browser> for live integration tests")
+    if auth.load_auth().missing_cookies():
+        pytest.skip("The imported LinkedIn session has expired; run warmpath auth import again")
     return run_cli(
         *args,
         "--cache-dir",
         str(tmp_path),
-        "--cookie-file",
-        str(linkedin_cookie_file()),
         "--refresh-cache",
         timeout=timeout,
     )
@@ -80,6 +74,8 @@ def test_top_level_help_shows_command_shapes() -> None:
     assert "human PROFILE_URL" in result.stdout
     assert "company COMPANY" in result.stdout
     assert "skill SKILL" in result.stdout
+    assert "auth import --browser BROWSER" in result.stdout
+    assert "auth status" in result.stdout
     assert f"human {RUSLAN_URL}" in result.stdout
     assert "company https://www.linkedin.com/company/ozon-tech" in result.stdout
     assert "skill Flutter" in result.stdout
@@ -145,37 +141,14 @@ def test_company_accepts_filter_query() -> None:
     assert args.filter == "Android Developer"
 
 
-def test_default_paths_use_user_directories() -> None:
+def test_default_cache_uses_user_directory() -> None:
     args = cli.parse_company_args(["https://www.linkedin.com/company/binance/"])
 
-    assert (
-        args.cookie_file
-        == Path.home() / ".config" / "warmpath" / "linkedin.cookies"
-    )
     assert args.cache_dir == Path.home() / ".cache" / "warmpath"
 
 
 def test_resolve_path_expands_home() -> None:
     assert cli.resolve_path(Path("~/warmpath-test")) == Path.home() / "warmpath-test"
-
-
-def test_load_netscape_cookies_keeps_session_cookies_sendable(tmp_path) -> None:
-    cookie_file = tmp_path / "linkedin.cookies"
-    cookie_file.write_text(
-        "# Netscape HTTP Cookie File\n"
-        ".www.linkedin.com\tTRUE\t/\tTRUE\t0\tJSESSIONID\tajax:token\n"
-    )
-
-    jar = cli.load_netscape_cookies(cookie_file)
-    session = Session()
-    session.cookies = jar
-    request = session.prepare_request(
-        Request("GET", "https://www.linkedin.com/voyager/api/me")
-    )
-
-    cookie = next(cookie for cookie in jar if cookie.name == "JSESSIONID")
-    assert cookie.expires is None
-    assert request.headers["Cookie"] == "JSESSIONID=ajax:token"
 
 
 @pytest.mark.xdist_group(name="linkedin")

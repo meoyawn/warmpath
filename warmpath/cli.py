@@ -1,6 +1,5 @@
 import argparse
 import hashlib
-import http.cookiejar
 import json
 import re
 import sys
@@ -10,10 +9,8 @@ from typing import Any, Callable, NoReturn
 from urllib.parse import unquote, urlparse
 
 from open_linkedin_api import Linkedin
-from requests.cookies import RequestsCookieJar
 
-DEFAULT_CONFIG_DIR = Path.home() / ".config" / "warmpath"
-DEFAULT_COOKIE_FILE = DEFAULT_CONFIG_DIR / "linkedin.cookies"
+from warmpath import auth
 
 
 PROFILE_URL_RE = re.compile(r"/in/([^/?#]+)/?")
@@ -75,47 +72,6 @@ def company_search_keywords(value: str) -> str:
     return value.strip()
 
 
-def load_netscape_cookies(path: Path) -> RequestsCookieJar:
-    source = http.cookiejar.MozillaCookieJar()
-    source.load(str(path), ignore_discard=True, ignore_expires=True)
-
-    jar = RequestsCookieJar()
-    for cookie in source:
-        # Netscape exports use `0` for session cookies.  MozillaCookieJar
-        # preserves that as an epoch timestamp, which requests then treats as
-        # expired and omits from outgoing requests.
-        if cookie.expires == 0:
-            cookie.expires = None
-        jar.set_cookie(cookie)
-    return jar
-
-
-def load_cookies(path: Path) -> RequestsCookieJar:
-    if not path.exists() or path.stat().st_size == 0:
-        fail(
-            "\n".join(
-                [
-                    f"Cookie file empty: {path}",
-                    "Paste LinkedIn cookies.txt there, then rerun.",
-                    "Accepted format: Netscape cookies.txt from Get cookies.txt LOCALLY.",
-                    "Required cookies: li_at and JSESSIONID.",
-                ]
-            ),
-            2,
-        )
-
-    try:
-        jar = load_netscape_cookies(path)
-    except http.cookiejar.LoadError as exc:
-        fail(f"Could not load Netscape cookies.txt: {exc}", 2)
-
-    names = {cookie.name for cookie in jar}
-    missing = {"li_at", "JSESSIONID"} - names
-    if missing:
-        fail(f"Missing required cookie(s): {', '.join(sorted(missing))}", 2)
-    return jar
-
-
 def resolve_path(path: Path) -> Path:
     path = path.expanduser()
     if path.is_absolute():
@@ -143,8 +99,11 @@ def use_fast_fetches(api: Any) -> None:
     api._post = fast_post
 
 
-def build_api(cookie_file: Path) -> Any:
-    cookies = load_cookies(resolve_path(cookie_file))
+def build_api() -> Any:
+    try:
+        cookies = auth.load_cookies()
+    except auth.AuthError as exc:
+        fail(str(exc), 2)
     api = Linkedin("", "", cookies=cookies)
     use_fast_fetches(api)
     return api
@@ -1578,7 +1537,7 @@ def render_skill_connections_result(result: dict[str, Any]) -> str:
 
 
 def run_human_command(args: argparse.Namespace) -> None:
-    api = build_api(args.cookie_file)
+    api = build_api()
     cache_dir = resolve_path(args.cache_dir)
     public_id = profile_slug(args.profile_url)
     distance = fetch_profile_network_distance(
@@ -1643,7 +1602,7 @@ def run_human_command(args: argparse.Namespace) -> None:
 
 
 def run_company_command(args: argparse.Namespace) -> None:
-    api = build_api(args.cookie_file)
+    api = build_api()
     max_targets = args.max_targets or args.limit
     result = find_company_path_candidates(
         api=api,
@@ -1660,7 +1619,7 @@ def run_company_command(args: argparse.Namespace) -> None:
 
 
 def run_skill_command(args: argparse.Namespace) -> None:
-    api = build_api(args.cookie_file)
+    api = build_api()
     result = find_skill_connections(
         api=api,
         skill=args.skill,
@@ -1683,9 +1642,9 @@ def parse_company_args(argv: list[str]) -> argparse.Namespace:
   uvx warmpath company "Ozon Tech" --max-degree 2 --limit 5
   uvx warmpath company Avito --limit 400 --filter Android
 
-cookies:
-  Paste Netscape cookies.txt from Get cookies.txt LOCALLY into ~/.config/warmpath/linkedin.cookies,
-  or pass another path with --cookie-file.
+authentication:
+  uvx warmpath auth import --browser chrome
+  uvx warmpath auth status
 """,
     )
     parser.add_argument("company", help="LinkedIn /company/ URL or company name")
@@ -1715,7 +1674,6 @@ cookies:
     parser.add_argument("--max-bridges", type=int, help=argparse.SUPPRESS)
     parser.add_argument("--cache-dir", type=Path, default=DEFAULT_CACHE_DIR)
     parser.add_argument("--refresh-cache", action="store_true")
-    parser.add_argument("--cookie-file", type=Path, default=DEFAULT_COOKIE_FILE)
     return parser.parse_args(argv)
 
 
@@ -1728,9 +1686,9 @@ def parse_skill_args(argv: list[str]) -> argparse.Namespace:
   uvx warmpath skill Flutter
   uvx warmpath skill Leadership --max-depth 2
 
-cookies:
-  Paste Netscape cookies.txt from Get cookies.txt LOCALLY into ~/.config/warmpath/linkedin.cookies,
-  or pass another path with --cookie-file.
+authentication:
+  uvx warmpath auth import --browser chrome
+  uvx warmpath auth status
 """,
     )
     parser.add_argument("skill", help="skill name to search for")
@@ -1749,7 +1707,6 @@ cookies:
     )
     parser.add_argument("--cache-dir", type=Path, default=DEFAULT_CACHE_DIR)
     parser.add_argument("--refresh-cache", action="store_true")
-    parser.add_argument("--cookie-file", type=Path, default=DEFAULT_COOKIE_FILE)
     return parser.parse_args(argv)
 
 
@@ -1761,16 +1718,47 @@ def parse_human_args(argv: list[str]) -> argparse.Namespace:
         epilog="""examples:
   uvx warmpath human https://www.linkedin.com/in/ruslan-gilemzianov/
 
-cookies:
-  Paste Netscape cookies.txt from Get cookies.txt LOCALLY into ~/.config/warmpath/linkedin.cookies,
-  or pass another path with --cookie-file.
+authentication:
+  uvx warmpath auth import --browser chrome
+  uvx warmpath auth status
 """,
     )
     parser.add_argument("profile_url", help="LinkedIn /in/ profile URL")
     parser.add_argument("--cache-dir", type=Path, default=DEFAULT_CACHE_DIR)
     parser.add_argument("--refresh-cache", action="store_true")
-    parser.add_argument("--cookie-file", type=Path, default=DEFAULT_COOKIE_FILE)
     return parser.parse_args(argv)
+
+
+def parse_auth_args(argv: list[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        prog="warmpath auth",
+        description="Import and inspect your LinkedIn browser session.",
+    )
+    commands = parser.add_subparsers(dest="auth_command", required=True)
+    importer = commands.add_parser("import", help="Import a logged-in browser session.")
+    importer.add_argument(
+        "--browser",
+        required=True,
+        type=str.lower,
+        choices=auth.BROWSERS,
+        help="Browser where you are logged in to LinkedIn.",
+    )
+    commands.add_parser("status", help="Check the saved session and cookie expiry locally.")
+    return parser.parse_args(argv)
+
+
+def run_auth_command(args: argparse.Namespace) -> None:
+    try:
+        session = (
+            auth.import_browser(args.browser)
+            if args.auth_command == "import"
+            else auth.load_auth()
+        )
+        print(auth.render_status(session))
+        if session.missing_cookies():
+            raise SystemExit(1)
+    except auth.AuthError as exc:
+        fail(str(exc), 2)
 
 
 def parse_main_args(argv: list[str]) -> argparse.Namespace:
@@ -1779,6 +1767,12 @@ def parse_main_args(argv: list[str]) -> argparse.Namespace:
         description="Local LinkedIn connection and referral-path tools.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""commands:
+  auth import --browser BROWSER
+    Import your LinkedIn session from a browser.
+
+  auth status
+    Check the saved session and cookie expiry locally.
+
   human PROFILE_URL
     Print mutual LinkedIn connections for a profile URL.
 
@@ -1790,12 +1784,15 @@ def parse_main_args(argv: list[str]) -> argparse.Namespace:
     Find 1st- and 2nd-degree LinkedIn profiles with a skill.
 
 examples:
+  uvx warmpath auth import --browser chrome
+  uvx warmpath auth status
   uvx warmpath human https://www.linkedin.com/in/ruslan-gilemzianov/
   uvx warmpath company https://www.linkedin.com/company/ozon-tech
   uvx warmpath company "Ozon Tech" --max-degree 2 --limit 5
   uvx warmpath skill Flutter
 
 more help:
+  uvx warmpath auth --help
   uvx warmpath human --help
   uvx warmpath company --help
   uvx warmpath skill --help
@@ -1815,6 +1812,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if not argv:
         parse_main_args(["--help"])
+        return
+
+    if argv[0] == "auth":
+        run_auth_command(parse_auth_args(argv[1:]))
         return
 
     if argv and argv[0] == "human":

@@ -2,20 +2,22 @@
 
 # Warmpath
 
-Find LinkedIn mutuals and warm paths using your logged-in LinkedIn cookies.
+Find LinkedIn mutuals and warm paths using your logged-in browser session.
 
 ## Setup
 
-1. Install [Get cookies.txt LOCALLY](https://chromewebstore.google.com/detail/get-cookiestxt-locally/cclelndahbckbenkjhflpdbgdldlbecc?hl=en).
-2. Log in to LinkedIn in Chrome.
-3. Use the extension to export cookies for `linkedin.com` in Netscape `cookies.txt` format.
-4. Create `~/.config/warmpath/linkedin.cookies` and paste the full export there:
+Log in to LinkedIn in a regular browser window, then import that session:
 
-```text
-~/.config/warmpath/linkedin.cookies
+```sh
+uvx warmpath auth import --browser chrome
+uvx warmpath auth status
 ```
 
-Warmpath needs the `li_at` and `JSESSIONID` cookies. Keep this file private; it lives outside the repository.
+Import uses [browser-cookie3](https://github.com/borisbabic/browser_cookie3) to read your browser's local cookie store. Supported browsers are Chrome, Chromium, Firefox, Edge, Brave, Safari, Arc, Vivaldi, Opera, Opera GX (`opera-gx`), and LibreWolf; availability depends on your operating system. Your OS may ask for keychain/keyring access. If the cookie store is locked, close the browser and retry. Private-window sessions cannot be imported.
+
+Warmpath imports only LinkedIn's `li_at` and `JSESSIONID` cookies and manages the saved session automatically. `company`, `skill`, and `human` use it on subsequent runs. Failed imports preserve the previous session.
+
+`auth status` shows the source browser, import time, cookie expiry, and storage location without displaying cookie values. It checks the saved session locally; LinkedIn may revoke a session before its cookies expire. If the session expires or LinkedIn stops accepting it, log in again and repeat `auth import`.
 
 ## Development
 
@@ -68,7 +70,8 @@ uvx warmpath human https://www.linkedin.com/in/mitchellh/
 
 ```sh
 uvx warmpath company "HashiCorp" --max-degree 2 --limit 5
-uvx warmpath company https://www.linkedin.com/company/hashicorp/ --cookie-file ~/.config/warmpath/linkedin.cookies
+uvx warmpath auth import --browser firefox
+uvx warmpath company https://www.linkedin.com/company/hashicorp/
 uvx warmpath skill Leadership --max-depth 2
 uvx warmpath human https://www.linkedin.com/in/mitchellh/ --refresh-cache
 uvx warmpath company --help
