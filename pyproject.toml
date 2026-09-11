@@ -1,6 +1,6 @@
 [project]
 name = "warmpath"
-version = "0.3.1"
+version = "0.3.2"
 description = "Local LinkedIn visible-connections scraper."
 requires-python = ">=3.10"
 dependencies = [

@@ -9,6 +9,7 @@ from typing import Any, Callable, NoReturn
 from urllib.parse import unquote, urlparse
 
 from open_linkedin_api import Linkedin
+from requests.exceptions import RequestException
 
 from warmpath import auth
 
@@ -107,6 +108,35 @@ def build_api() -> Any:
     api = Linkedin("", "", cookies=cookies)
     use_fast_fetches(api)
     return api
+
+
+def logged_in_user_name(api: Any) -> str:
+    try:
+        response = api._fetch("/me", timeout=15)
+        if response.status_code in (401, 403):
+            raise auth.AuthError(
+                "LinkedIn rejected the saved session. Sign in to LinkedIn, "
+                f"then reimport your session. {auth.IMPORT_HINT}"
+            )
+        response.raise_for_status()
+        data = response.json()
+    except (RequestException, ValueError) as exc:
+        raise auth.AuthError(
+            "Could not fetch the logged-in LinkedIn user. Check your connection "
+            f"and try again, or reimport your session. {auth.IMPORT_HINT}"
+        ) from exc
+
+    profile = data.get("miniProfile") if isinstance(data, dict) else None
+    name = ""
+    if isinstance(profile, dict):
+        name = " ".join(
+            value.strip()
+            for key in ("firstName", "lastName")
+            if isinstance(value := profile.get(key), str) and value.strip()
+        )
+    if not name:
+        raise auth.AuthError("LinkedIn did not return a name for the logged-in user.")
+    return name
 
 
 def profile_urn_id(api: Any, public_id: str) -> str:
@@ -1743,7 +1773,7 @@ def parse_auth_args(argv: list[str]) -> argparse.Namespace:
         choices=auth.BROWSERS,
         help="Browser where you are logged in to LinkedIn.",
     )
-    commands.add_parser("status", help="Check the saved session and cookie expiry locally.")
+    commands.add_parser("status", help="Show the logged-in user and saved session details.")
     return parser.parse_args(argv)
 
 
@@ -1757,6 +1787,8 @@ def run_auth_command(args: argparse.Namespace) -> None:
         print(auth.render_status(session))
         if session.missing_cookies():
             raise SystemExit(1)
+        if args.auth_command == "status":
+            print(f"User: {logged_in_user_name(build_api())}")
     except auth.AuthError as exc:
         fail(str(exc), 2)
 
@@ -1771,7 +1803,7 @@ def parse_main_args(argv: list[str]) -> argparse.Namespace:
     Import your LinkedIn session from a browser.
 
   auth status
-    Check the saved session and cookie expiry locally.
+    Show the logged-in user and saved session details.
 
   human PROFILE_URL
     Print mutual LinkedIn connections for a profile URL.

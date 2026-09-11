@@ -6,6 +6,7 @@ from unittest.mock import Mock
 import pytest
 from requests import Request
 from requests.cookies import RequestsCookieJar
+from requests.exceptions import ConnectionError, HTTPError, Timeout
 
 from warmpath import auth, cli
 
@@ -15,6 +16,17 @@ def auth_path(tmp_path, monkeypatch):
     path = tmp_path / "warmpath" / "auth.json"
     monkeypatch.setattr(auth, "auth_store_path", lambda: path)
     return path
+
+
+@pytest.fixture(autouse=True)
+def profile_fetch(monkeypatch):
+    response = Mock()
+    response.json.return_value = {
+        "miniProfile": {"firstName": "Ada", "lastName": "Lovelace"},
+    }
+    fetch = Mock(return_value=response)
+    monkeypatch.setattr(cli.Linkedin, "_fetch", fetch)
+    return fetch
 
 
 @pytest.fixture
@@ -136,8 +148,9 @@ def test_imported_session_reaches_linkedin_with_csrf_and_cookie_attributes(reade
     assert "Cookie" not in session.prepare_request(Request("GET", "http://www.linkedin.com/")).headers
 
 
-def test_import_and_status_report_metadata_without_cookie_values(reader, capsys, auth_path):
+def test_import_and_status_report_metadata_without_cookie_values(reader, capsys, auth_path, profile_fetch):
     cli.main(["auth", "import", "--browser", "Chrome"])
+    profile_fetch.assert_not_called()
     before = auth_path.read_bytes()
     reader.reset_mock()
     cli.main(["auth", "status"])
@@ -145,6 +158,7 @@ def test_import_and_status_report_metadata_without_cookie_values(reader, capsys,
     output = capsys.readouterr()
     assert output.err == ""
     assert output.out.count("Status: ready (local expiry check)") == 2
+    assert output.out.count("User: Ada Lovelace") == 1
     assert "Browser: chrome" in output.out
     assert "Imported:" in output.out
     assert str(auth_path) in output.out
@@ -154,6 +168,84 @@ def test_import_and_status_report_metadata_without_cookie_values(reader, capsys,
     assert "private-csrf-token" not in output.out
     assert auth_path.read_bytes() == before
     reader.assert_not_called()
+    profile_fetch.assert_called_once_with("/me", timeout=15, evade=cli.no_delay)
+
+
+@pytest.mark.parametrize("profile,expected", [
+    ({"firstName": "  Ada ", "lastName": " Lovelace  "}, "Ada Lovelace"),
+    ({"firstName": "Адель", "lastName": "Низамутдинов"}, "Адель Низамутдинов"),
+    ({"firstName": "Ada"}, "Ada"),
+    ({"lastName": "Lovelace"}, "Lovelace"),
+])
+def test_status_prints_the_logged_in_users_name(profile, expected, reader, profile_fetch, capsys):
+    auth.import_browser("chrome")
+    profile_fetch.return_value.json.return_value = {"miniProfile": profile}
+
+    cli.main(["auth", "status"])
+
+    assert f"User: {expected}\n" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("payload", [
+    {}, None, [], {"miniProfile": None}, {"miniProfile": "private-linkedin-token"},
+    {"miniProfile": {"firstName": " ", "lastName": None}},
+    {"miniProfile": {"firstName": ["private-linkedin-token"], "lastName": 123}},
+])
+def test_status_rejects_a_profile_without_a_name(payload, reader, profile_fetch, capsys):
+    auth.import_browser("chrome")
+    profile_fetch.return_value.json.return_value = payload
+
+    with pytest.raises(SystemExit) as error:
+        cli.main(["auth", "status"])
+
+    assert error.value.code == 2
+    output = capsys.readouterr()
+    assert "LinkedIn did not return a name" in output.err
+    assert "User:" not in output.out
+    assert "private-linkedin-token" not in output.out + output.err
+
+
+@pytest.mark.parametrize("failure", ["connection", "timeout", "http", "json"])
+def test_status_handles_failed_user_lookup_without_exposing_secrets(failure, reader, profile_fetch, capsys, auth_path):
+    auth.import_browser("chrome")
+    before = auth_path.read_bytes()
+    reader.reset_mock()
+    if failure == "connection":
+        profile_fetch.side_effect = ConnectionError("private-linkedin-token")
+    elif failure == "timeout":
+        profile_fetch.side_effect = Timeout("private-linkedin-token")
+    elif failure == "http":
+        profile_fetch.return_value.raise_for_status.side_effect = HTTPError("private-linkedin-token")
+    else:
+        profile_fetch.return_value.json.side_effect = ValueError("private-linkedin-token")
+
+    with pytest.raises(SystemExit) as error:
+        cli.main(["auth", "status"])
+
+    assert error.value.code == 2
+    output = capsys.readouterr()
+    assert "Could not fetch the logged-in LinkedIn user" in output.err
+    assert "warmpath auth import --browser" in output.err
+    assert "User:" not in output.out
+    assert "private-linkedin-token" not in output.out + output.err
+    assert auth_path.read_bytes() == before
+    reader.assert_not_called()
+
+
+@pytest.mark.parametrize("status_code", [401, 403])
+def test_status_reports_rejected_sessions(status_code, reader, profile_fetch, capsys):
+    auth.import_browser("chrome")
+    profile_fetch.return_value.status_code = status_code
+
+    with pytest.raises(SystemExit) as error:
+        cli.main(["auth", "status"])
+
+    assert error.value.code == 2
+    output = capsys.readouterr()
+    assert "LinkedIn rejected the saved session" in output.err
+    assert "warmpath auth import --browser" in output.err
+    assert "User:" not in output.out
+    profile_fetch.return_value.json.assert_not_called()
 
 
 @pytest.mark.skipif(os.name != "posix", reason="Unix file permissions")
@@ -266,7 +358,7 @@ def test_invalid_stored_cookie_is_rejected(field, value, reader, auth_path):
         auth.load_cookies()
 
 
-def test_expired_session_is_reported_and_rejected_without_reimport(reader, capsys):
+def test_expired_session_is_reported_and_rejected_without_reimport(reader, capsys, profile_fetch):
     session = auth.import_browser("chrome")
     next(cookie for cookie in session.cookies if cookie.name == "li_at").expires = 1
     auth.save_auth(session)
@@ -287,6 +379,7 @@ def test_expired_session_is_reported_and_rejected_without_reimport(reader, capsy
     assert api_error.value.code == 2
     assert "warmpath auth import --browser chrome" in capsys.readouterr().err
     reader.assert_not_called()
+    profile_fetch.assert_not_called()
 
 
 @pytest.mark.parametrize("arguments", [[], ["import"], ["import", "--browser", "unknown"], ["login"]])
