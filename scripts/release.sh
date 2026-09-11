@@ -75,12 +75,12 @@ if uv run python -m zipfile -l "$wheel" | grep -q '\.uv-cache'; then
   exit 1
 fi
 
-echo "Tagging ${PACKAGE} ${version}"
-git tag -a "$tag" -m "${PACKAGE} ${version}"
-git push origin "$tag"
-
 echo "Publishing ${PACKAGE} ${version}"
 UV_PUBLISH_TOKEN="$token" uv publish
 
-echo "Smoke-testing uvx ${PACKAGE}"
-uvx --refresh-package "$PACKAGE" "$PACKAGE" --help
+echo "Smoke-testing uvx ${PACKAGE} ${version}"
+uvx --refresh-package "$PACKAGE" --from "${PACKAGE}==${version}" "$PACKAGE" --help
+
+echo "Tagging ${PACKAGE} ${version}"
+git tag -a "$tag" -m "${PACKAGE} ${version}"
+git push origin "$tag"
