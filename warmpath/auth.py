@@ -93,7 +93,7 @@ def save_auth(session: AuthSession) -> None:
                 "domain": cookie.domain,
                 "domain_specified": cookie.domain_specified,
                 "path": cookie.path,
-                "secure": cookie.secure,
+                "secure": bool(cookie.secure),
                 "expires": cookie.expires,
             }
             for cookie in session.cookies
@@ -173,7 +173,9 @@ def load_auth() -> AuthSession:
                     not isinstance(record.get(key), str)
                     for key in ("name", "value", "domain", "path")
                 )
-                or type(record.get("secure")) is not bool
+                # Older imports saved browser-cookie3's integer 0/1 Secure flag.
+                or type(record.get("secure")) not in (bool, int)
+                or record["secure"] not in (0, 1)
                 or type(record.get("domain_specified")) is not bool
                 or (
                     record.get("expires") is not None
@@ -186,7 +188,7 @@ def load_auth() -> AuthSession:
                 value=record["value"],
                 domain=record["domain"],
                 path=record["path"],
-                secure=record["secure"],
+                secure=bool(record["secure"]),
                 expires=record.get("expires"),
             )
             cookie.domain_specified = record["domain_specified"]

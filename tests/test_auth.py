@@ -50,6 +50,43 @@ def test_import_reads_only_the_selected_browser(browser, browser_cookies, monkey
     assert auth.load_auth().browser == browser
 
 
+@pytest.mark.parametrize("secure", [0, 1])
+def test_browser_cookie_integer_secure_flag_round_trips(secure, reader, browser_cookies, auth_path):
+    # browser-cookie3 passes Chrome's SQLite integer flags through to Cookie.
+    for cookie in list(browser_cookies):
+        browser_cookies.set_cookie(auth.browser_cookie3.create_cookie(
+            cookie.domain, cookie.path, secure, cookie.expires,
+            cookie.name, cookie.value, True,
+        ))
+
+    cli.main(["auth", "import", "--browser", "chrome"])
+    cli.main(["auth", "status"])
+
+    payload = json.loads(auth_path.read_text())
+    assert all(record["secure"] is bool(secure) for record in payload["cookies"])
+    assert auth.load_cookies().get_dict() == browser_cookies.get_dict()
+    assert all(cookie.secure is bool(secure) for cookie in auth.load_cookies())
+
+
+@pytest.mark.parametrize("secure", [0, 1])
+def test_existing_integer_secure_flags_load_without_reimport(secure, reader, auth_path):
+    auth.import_browser("chrome")
+    payload = json.loads(auth_path.read_text())
+    for record in payload["cookies"]:
+        record["secure"] = secure
+    auth_path.write_text(json.dumps(payload))
+    before = auth_path.read_bytes()
+    reader.reset_mock()
+
+    cli.main(["auth", "status"])
+    cookies = auth.load_cookies()
+
+    assert not auth.load_auth().missing_cookies()
+    assert all(cookie.secure is bool(secure) for cookie in cookies)
+    assert auth_path.read_bytes() == before
+    reader.assert_not_called()
+
+
 def test_import_filters_unrelated_expired_and_out_of_scope_cookies(reader, browser_cookies, auth_path):
     for name, domain, path, expires, value in [
         ("tracking", ".linkedin.com", "/", None, "unrelated-tracking-token"),
@@ -215,6 +252,7 @@ def test_corrupt_store_has_reimport_guidance(content, auth_path, capsys):
 
 @pytest.mark.parametrize("field,value", [
     ("domain", "example.org"), ("path", "/jobs"), ("secure", "true"),
+    ("secure", 2), ("secure", -1), ("secure", 0.0), ("secure", 1.0), ("secure", None),
     ("expires", "tomorrow"), ("expires", 10**20),
     ("domain_specified", False), ("value", "token\r\nInjected: header"),
 ])
