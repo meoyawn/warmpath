@@ -148,42 +148,41 @@ def test_imported_session_reaches_linkedin_with_csrf_and_cookie_attributes(reade
     assert "Cookie" not in session.prepare_request(Request("GET", "http://www.linkedin.com/")).headers
 
 
-def test_import_and_status_report_metadata_without_cookie_values(reader, capsys, auth_path, profile_fetch):
+def test_import_and_status_print_only_the_logged_in_user(reader, capsys, auth_path, profile_fetch):
     cli.main(["auth", "import", "--browser", "Chrome"])
-    profile_fetch.assert_not_called()
+    output = capsys.readouterr()
+    assert output.out == "Logged in as Ada Lovelace\n"
+    assert output.err == ""
+    profile_fetch.assert_called_once_with("/me", timeout=15, evade=cli.no_delay)
+    profile_fetch.reset_mock()
     before = auth_path.read_bytes()
     reader.reset_mock()
     cli.main(["auth", "status"])
 
     output = capsys.readouterr()
     assert output.err == ""
-    assert output.out.count("Status: ready (local expiry check)") == 2
-    assert output.out.count("User: Ada Lovelace") == 1
-    assert "Browser: chrome" in output.out
-    assert "Imported:" in output.out
-    assert str(auth_path) in output.out
-    assert "Cookie: JSESSIONID; expires: session" in output.out
-    assert "Cookie: li_at; expires: 2100-01-01T00:00:00+00:00" in output.out
-    assert "private-linkedin-token" not in output.out
-    assert "private-csrf-token" not in output.out
+    assert output.out == "Logged in as Ada Lovelace\n"
     assert auth_path.read_bytes() == before
     reader.assert_not_called()
     profile_fetch.assert_called_once_with("/me", timeout=15, evade=cli.no_delay)
 
 
+@pytest.mark.parametrize("command", [["status"], ["import", "--browser", "chrome"]])
 @pytest.mark.parametrize("profile,expected", [
     ({"firstName": "  Ada ", "lastName": " Lovelace  "}, "Ada Lovelace"),
     ({"firstName": "Адель", "lastName": "Низамутдинов"}, "Адель Низамутдинов"),
     ({"firstName": "Ada"}, "Ada"),
     ({"lastName": "Lovelace"}, "Lovelace"),
 ])
-def test_status_prints_the_logged_in_users_name(profile, expected, reader, profile_fetch, capsys):
+def test_auth_prints_the_logged_in_users_name(command, profile, expected, reader, profile_fetch, capsys):
     auth.import_browser("chrome")
     profile_fetch.return_value.json.return_value = {"miniProfile": profile}
 
-    cli.main(["auth", "status"])
+    cli.main(["auth", *command])
 
-    assert f"User: {expected}\n" in capsys.readouterr().out
+    output = capsys.readouterr()
+    assert output.out == f"Logged in as {expected}\n"
+    assert output.err == ""
 
 
 @pytest.mark.parametrize("payload", [
@@ -198,11 +197,10 @@ def test_status_rejects_a_profile_without_a_name(payload, reader, profile_fetch,
     with pytest.raises(SystemExit) as error:
         cli.main(["auth", "status"])
 
-    assert error.value.code == 2
+    assert error.value.code == 1
     output = capsys.readouterr()
-    assert "LinkedIn did not return a name" in output.err
-    assert "User:" not in output.out
-    assert "private-linkedin-token" not in output.out + output.err
+    assert output.out == "Not logged in\n"
+    assert output.err == ""
 
 
 @pytest.mark.parametrize("failure", ["connection", "timeout", "http", "json"])
@@ -222,12 +220,10 @@ def test_status_handles_failed_user_lookup_without_exposing_secrets(failure, rea
     with pytest.raises(SystemExit) as error:
         cli.main(["auth", "status"])
 
-    assert error.value.code == 2
+    assert error.value.code == 1
     output = capsys.readouterr()
-    assert "Could not fetch the logged-in LinkedIn user" in output.err
-    assert "warmpath auth import --browser" in output.err
-    assert "User:" not in output.out
-    assert "private-linkedin-token" not in output.out + output.err
+    assert output.out == "Not logged in\n"
+    assert output.err == ""
     assert auth_path.read_bytes() == before
     reader.assert_not_called()
 
@@ -240,12 +236,34 @@ def test_status_reports_rejected_sessions(status_code, reader, profile_fetch, ca
     with pytest.raises(SystemExit) as error:
         cli.main(["auth", "status"])
 
+    assert error.value.code == 1
+    output = capsys.readouterr()
+    assert output.out == "Not logged in\n"
+    assert output.err == ""
+    profile_fetch.return_value.json.assert_not_called()
+
+
+@pytest.mark.parametrize("failure", ["rejected", "connection", "missing_name"])
+def test_failed_import_lookup_preserves_previous_session(failure, reader, browser_cookies, auth_path, profile_fetch, capsys):
+    auth.import_browser("chrome")
+    before = auth_path.read_bytes()
+    next(cookie for cookie in browser_cookies if cookie.name == "li_at").value = "new-private-token"
+    if failure == "rejected":
+        profile_fetch.return_value.status_code = 401
+    elif failure == "connection":
+        profile_fetch.side_effect = ConnectionError("new-private-token")
+    else:
+        profile_fetch.return_value.json.return_value = {}
+
+    with pytest.raises(SystemExit) as error:
+        cli.main(["auth", "import", "--browser", "chrome"])
+
     assert error.value.code == 2
     output = capsys.readouterr()
-    assert "LinkedIn rejected the saved session" in output.err
-    assert "warmpath auth import --browser" in output.err
-    assert "User:" not in output.out
-    profile_fetch.return_value.json.assert_not_called()
+    assert output.out == ""
+    assert output.err
+    assert "new-private-token" not in output.err
+    assert auth_path.read_bytes() == before
 
 
 @pytest.mark.skipif(os.name != "posix", reason="Unix file permissions")
@@ -309,7 +327,7 @@ def test_failed_save_preserves_previous_session_and_cleans_up(reader, auth_path,
 
 
 @pytest.mark.parametrize("command", [
-    ["auth", "status"], ["company", "Acme"], ["skill", "Python"],
+    ["company", "Acme"], ["skill", "Python"],
     ["human", "https://www.linkedin.com/in/example/"],
 ])
 def test_missing_auth_has_import_guidance_without_browser_or_api_access(command, reader, monkeypatch, capsys, auth_path):
@@ -326,19 +344,34 @@ def test_missing_auth_has_import_guidance_without_browser_or_api_access(command,
     linkedin.assert_not_called()
 
 
+def test_missing_auth_status_prints_not_logged_in(reader, monkeypatch, capsys, auth_path):
+    linkedin = Mock()
+    monkeypatch.setattr(cli, "Linkedin", linkedin)
+
+    with pytest.raises(SystemExit) as error:
+        cli.main(["auth", "status"])
+
+    assert error.value.code == 1
+    output = capsys.readouterr()
+    assert output.out == "Not logged in\n"
+    assert output.err == ""
+    assert not auth_path.exists()
+    reader.assert_not_called()
+    linkedin.assert_not_called()
+
+
 @pytest.mark.parametrize("content", [b"", b"[]", b"{}", b"private-token", b"\xff"])
-def test_corrupt_store_has_reimport_guidance(content, auth_path, capsys):
+def test_corrupt_store_status_prints_not_logged_in(content, auth_path, capsys):
     auth_path.parent.mkdir()
     auth_path.write_bytes(content)
 
     with pytest.raises(SystemExit) as error:
         cli.main(["auth", "status"])
 
-    assert error.value.code == 2
+    assert error.value.code == 1
     output = capsys.readouterr()
-    assert "saved LinkedIn session is invalid" in output.err
-    assert "warmpath auth import --browser" in output.err
-    assert "private-token" not in output.out + output.err
+    assert output.out == "Not logged in\n"
+    assert output.err == ""
     assert auth_path.read_bytes() == content
 
 
@@ -369,9 +402,8 @@ def test_expired_session_is_reported_and_rejected_without_reimport(reader, capsy
 
     assert status_error.value.code == 1
     output = capsys.readouterr()
-    assert "Status: expired or incomplete" in output.out
-    assert "Missing or expired: li_at" in output.out
-    assert "warmpath auth import --browser chrome" in output.out
+    assert output.out == "Not logged in\n"
+    assert output.err == ""
 
     with pytest.raises(SystemExit) as api_error:
         cli.build_api()

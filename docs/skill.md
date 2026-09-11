@@ -18,7 +18,7 @@ For the `skill` subcommand, the call path is:
 4. `find_skill_connections(...)`
 5. `render_skill_connections_result(result)`
 
-`run_skill_command` builds a LinkedIn API client from the session saved by `warmpath auth import --browser <browser>`, resolves the cache directory, calls the skill search pipeline, and prints the rendered result. Use `warmpath auth status` to check the saved session's expiry locally.
+`run_skill_command` builds a LinkedIn API client from the session saved by `warmpath auth import --browser <browser>`, resolves the cache directory, calls the skill search pipeline, and prints the rendered result. Use `warmpath auth status` to check whether you are logged in and as whom.
 
 ## Defaults
 

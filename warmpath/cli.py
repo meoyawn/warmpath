@@ -100,9 +100,9 @@ def use_fast_fetches(api: Any) -> None:
     api._post = fast_post
 
 
-def build_api() -> Any:
+def build_api(session: auth.AuthSession | None = None) -> Any:
     try:
-        cookies = auth.load_cookies()
+        cookies = auth.select_cookies(session.cookies) if session is not None else auth.load_cookies()
     except auth.AuthError as exc:
         fail(str(exc), 2)
     api = Linkedin("", "", cookies=cookies)
@@ -1773,23 +1773,28 @@ def parse_auth_args(argv: list[str]) -> argparse.Namespace:
         choices=auth.BROWSERS,
         help="Browser where you are logged in to LinkedIn.",
     )
-    commands.add_parser("status", help="Show the logged-in user and saved session details.")
+    commands.add_parser("status", help="Show whether you are logged in and as whom.")
     return parser.parse_args(argv)
 
 
 def run_auth_command(args: argparse.Namespace) -> None:
     try:
         session = (
-            auth.import_browser(args.browser)
+            auth.import_browser(args.browser, save=False)
             if args.auth_command == "import"
             else auth.load_auth()
         )
-        print(auth.render_status(session))
         if session.missing_cookies():
+            print("Not logged in")
             raise SystemExit(1)
-        if args.auth_command == "status":
-            print(f"User: {logged_in_user_name(build_api())}")
+        name = logged_in_user_name(build_api(session))
+        if args.auth_command == "import":
+            auth.save_auth(session)
+        print(f"Logged in as {name}")
     except auth.AuthError as exc:
+        if args.auth_command == "status":
+            print("Not logged in")
+            raise SystemExit(1)
         fail(str(exc), 2)
 
 
@@ -1803,7 +1808,7 @@ def parse_main_args(argv: list[str]) -> argparse.Namespace:
     Import your LinkedIn session from a browser.
 
   auth status
-    Show the logged-in user and saved session details.
+    Show whether you are logged in and as whom.
 
   human PROFILE_URL
     Print mutual LinkedIn connections for a profile URL.

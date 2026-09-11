@@ -37,7 +37,7 @@ Supported browsers are Chrome, Chromium, Firefox, Edge, Brave, Safari, Arc, Viva
 
 Warmpath imports only LinkedIn's `li_at` and `JSESSIONID` cookies and manages the saved session automatically. `company`, `skill`, and `human` use it on subsequent runs. Failed imports preserve the previous session.
 
-`auth status` fetches and prints the logged-in user's name from LinkedIn, along with the source browser, import time, cookie expiry, and storage location, without displaying cookie values. It requires a connection to LinkedIn and exits with an error if the user lookup fails. If the session expires or LinkedIn stops accepting it, log in again and repeat `auth import`.
+`auth import` and `auth status` print only `Logged in as <name>` after confirming your session with LinkedIn. If `auth status` cannot confirm a login, it prints `Not logged in` and exits with status 1. Both commands require a connection to LinkedIn. If the session expires or LinkedIn stops accepting it, log in again and repeat `auth import`.
 
 ## Development
 

@@ -125,7 +125,7 @@ def save_auth(session: AuthSession) -> None:
             temporary.unlink(missing_ok=True)
 
 
-def import_browser(browser: str) -> AuthSession:
+def import_browser(browser: str, *, save: bool = True) -> AuthSession:
     if browser not in BROWSERS:
         raise AuthError(f"Unsupported browser. Choose from: {', '.join(BROWSERS)}.")
     try:
@@ -147,7 +147,8 @@ def import_browser(browser: str) -> AuthSession:
             f"{', '.join(missing)}. Sign in to LinkedIn in a regular browser window, "
             f"then run warmpath auth import --browser {browser} again."
         )
-    save_auth(session)
+    if save:
+        save_auth(session)
     return session
 
 
@@ -213,22 +214,3 @@ def load_cookies() -> RequestsCookieJar:
             f"Sign in to LinkedIn, then run warmpath auth import --browser {session.browser}."
         )
     return select_cookies(session.cookies)
-
-
-def render_status(session: AuthSession) -> str:
-    missing = session.missing_cookies()
-    lines = [
-        f"Status: {'expired or incomplete' if missing else 'ready'} (local expiry check)",
-        f"Browser: {session.browser}",
-        f"Imported: {session.imported_at.isoformat()}",
-        f"Store: {auth_store_path()}",
-    ]
-    for cookie in sorted(session.cookies, key=lambda cookie: cookie.name):
-        expiry = "session"
-        if cookie.expires is not None:
-            expiry = datetime.fromtimestamp(cookie.expires, timezone.utc).isoformat()
-        lines.append(f"Cookie: {cookie.name}; expires: {expiry}")
-    if missing:
-        lines.append(f"Missing or expired: {', '.join(missing)}")
-        lines.append(f"Run warmpath auth import --browser {session.browser} again.")
-    return "\n".join(lines)
