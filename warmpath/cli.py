@@ -3,6 +3,7 @@ import hashlib
 import json
 import re
 import sys
+import tempfile
 from importlib.metadata import version as distribution_version
 from pathlib import Path
 from typing import Any, Callable, NoReturn
@@ -11,7 +12,7 @@ from urllib.parse import unquote, urlparse
 from open_linkedin_api import Linkedin
 from requests.exceptions import RequestException
 
-from warmpath import auth
+from warmpath import auth, auth_http, browser_http, companies
 
 
 PROFILE_URL_RE = re.compile(r"/in/([^/?#]+)/?")
@@ -100,12 +101,32 @@ def use_fast_fetches(api: Any) -> None:
     api._post = fast_post
 
 
-def build_api(session: auth.AuthSession | None = None) -> Any:
-    try:
-        cookies = auth.select_cookies(session.cookies) if session is not None else auth.load_cookies()
-    except auth.AuthError as exc:
-        fail(str(exc), 2)
+def build_api(
+    session: auth.AuthSession | None = None, *, refresh_session: bool | None = None
+) -> Any:
+    refresh = session is None if refresh_session is None else refresh_session
+    session = session if session is not None else auth.load_auth()
+    if session.missing_cookies():
+        if not refresh:
+            raise auth.AuthError(f"The imported LinkedIn session has expired. {auth.IMPORT_HINT}")
+        replacement = auth.import_browser(session.browser, save=False)
+        validation_api = build_api(replacement)
+        logged_in_user_name(validation_api)
+        auth.save_auth(replacement)
+        session = replacement
+    cookies = auth.select_cookies(session.cookies)
     api = Linkedin("", "", cookies=cookies)
+    user_agent = session.user_agent or auth.browser_user_agent(session.browser)
+    if user_agent:
+        api.client.session.headers["user-agent"] = user_agent
+    else:
+        api.client.session.headers.pop("user-agent", None)
+    adapter = browser_http.BrowserAdapter(session.browser)
+    api.client.session.mount("https://www.linkedin.com/", adapter)
+    api.client.session.mount("https://linkedin.com/", adapter)
+    api.client.session.request = auth_http.SessionRequests(
+        api.client.session, session, refresh=refresh, persist=refresh
+    )
     use_fast_fetches(api)
     return api
 
@@ -363,16 +384,25 @@ def cached_json(
 ) -> Any:
     path = cache_file_path(cache_dir, namespace, key)
     if not refresh_cache and path.exists():
-        cached = json.loads(path.read_text(encoding="utf-8"))
-        if cache_empty or cached not in ([], {}):
-            return cached
+        try:
+            cached = json.loads(path.read_text(encoding="utf-8"))
+            if cache_empty or cached not in ([], {}):
+                return cached
+        except json.JSONDecodeError:
+            pass
 
     data = fetch()
     if cache_empty or data not in ([], {}):
         cache_dir.mkdir(parents=True, exist_ok=True)
-        path.write_text(
-            json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8"
-        )
+        temporary: Path | None = None
+        try:
+            with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=cache_dir, delete=False) as stream:
+                temporary = Path(stream.name)
+                json.dump(data, stream, ensure_ascii=False)
+            temporary.replace(path)
+        finally:
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
     return data
 
 
@@ -448,6 +478,12 @@ def resolve_company(
                 refresh_cache,
                 lambda: api.get_company(slug),
             )
+        except auth.AuthError:
+            raise
+        except RequestException as exc:
+            if exc.response is None or exc.response.status_code not in (403, 404):
+                raise
+            payload = {}
         except Exception:
             payload = {}
 
@@ -938,6 +974,12 @@ def fetch_profile_network_distance(
             refresh_cache,
             lambda: get_network_info(public_id),
         )
+    except auth.AuthError:
+        raise
+    except RequestException as exc:
+        if exc.response is None or exc.response.status_code not in (403, 404):
+            raise
+        return None
     except Exception:
         return None
 
@@ -1648,6 +1690,59 @@ def run_company_command(args: argparse.Namespace) -> None:
     print(render_company_path_result(result))
 
 
+def run_companies_command(args: argparse.Namespace) -> None:
+    session = auth.load_auth()
+    token = next((cookie.value for cookie in session.cookies if cookie.name == "li_at"), None)
+    if not token:
+        raise auth.AuthError(f"No imported LinkedIn session. {auth.IMPORT_HINT}")
+    scope = {"session": hashlib.sha256(token.encode()).hexdigest(), "version": 1}
+    cache_dir = resolve_path(args.cache_dir)
+    api: Any = None
+
+    def fetch(endpoint: str, params: dict[str, Any]) -> dict[str, Any]:
+        nonlocal api
+        if api is None:
+            api = build_api()
+        response = api._fetch(endpoint, params=params)
+        response.raise_for_status()
+        return response.json()
+
+    def fetch_page(endpoint: str, params: dict[str, Any]) -> dict[str, Any]:
+        return cached_json(cache_dir, "connection-pages", {**scope, **params}, args.refresh_cache,
+                           lambda: fetch(endpoint, params))
+
+    def get_employers(identity: str) -> list[dict[str, str | None]]:
+        return cached_json(cache_dir, "connection-employers", {**scope, "profile": identity, "format": 2}, args.refresh_cache,
+                           lambda: companies.profile_companies(fetch, identity))
+
+    def progress(count: int) -> None:
+        if count % 25 == 0:
+            print(f"Checked {count} connections…", file=sys.stderr)
+
+    result_scope = {**scope, "format": 2}
+    result_path = cache_file_path(cache_dir, "companies", result_scope)
+    result = None
+    if not args.refresh_cache and result_path.exists():
+        try:
+            result = json.loads(result_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            pass
+    try:
+        if result is None:
+            result = companies.find_companies(fetch_page, get_employers, progress)
+            # Keep unavailable-profile metadata with the snapshot, so cache hits
+            # preserve its incomplete status without retrying restricted profiles.
+            cached_json(cache_dir, "companies", result_scope, True, lambda: result)
+    finally:
+        if api is not None:
+            api.client.session.close()
+    rendered = companies.render_companies(result["companies"], args.urls)
+    if rendered:
+        print(rendered)
+    if result["unavailable_profiles"]:
+        fail(f"Results are incomplete: complete employment data was unavailable for {len(result['unavailable_profiles'])} connections. Use --refresh-cache to retry.")
+
+
 def run_skill_command(args: argparse.Namespace) -> None:
     api = build_api()
     result = find_skill_connections(
@@ -1704,6 +1799,17 @@ authentication:
     parser.add_argument("--max-bridges", type=int, help=argparse.SUPPRESS)
     parser.add_argument("--cache-dir", type=Path, default=DEFAULT_CACHE_DIR)
     parser.add_argument("--refresh-cache", action="store_true")
+    return parser.parse_args(argv)
+
+
+def parse_companies_args(argv: list[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        prog="warmpath companies",
+        description="List current employers of all your 1st-degree LinkedIn connections.",
+    )
+    parser.add_argument("--urls", "--urls-only", action="store_true", help="Print LinkedIn company URLs only; omit employers without a company page.")
+    parser.add_argument("--cache-dir", type=Path, default=DEFAULT_CACHE_DIR)
+    parser.add_argument("--refresh-cache", action="store_true", help="Fetch a new snapshot of connections and their current employers.")
     return parser.parse_args(argv)
 
 
@@ -1784,10 +1890,9 @@ def run_auth_command(args: argparse.Namespace) -> None:
             if args.auth_command == "import"
             else auth.load_auth()
         )
-        if session.missing_cookies():
-            print("Not logged in")
-            raise SystemExit(1)
-        name = logged_in_user_name(build_api(session))
+        name = logged_in_user_name(build_api(
+            session, refresh_session=args.auth_command == "status"
+        ))
         if args.auth_command == "import":
             auth.save_auth(session)
         print(f"Logged in as {name}")
@@ -1817,6 +1922,9 @@ def parse_main_args(argv: list[str]) -> argparse.Namespace:
     Find people at a company reachable through your LinkedIn network.
     COMPANY can be a LinkedIn /company/ URL or a company name.
 
+  companies [--urls]
+    List current employers of every 1st-degree connection, with duplicates removed.
+
   skill SKILL
     Find 1st- and 2nd-degree LinkedIn profiles with a skill.
 
@@ -1826,12 +1934,14 @@ examples:
   uvx warmpath human https://www.linkedin.com/in/ruslan-gilemzianov/
   uvx warmpath company https://www.linkedin.com/company/ozon-tech
   uvx warmpath company "Ozon Tech" --max-degree 2 --limit 5
+  uvx warmpath companies --urls
   uvx warmpath skill Flutter
 
 more help:
   uvx warmpath auth --help
   uvx warmpath human --help
   uvx warmpath company --help
+  uvx warmpath companies --help
   uvx warmpath skill --help
 """,
     )
@@ -1843,7 +1953,7 @@ more help:
     return parser.parse_args(argv)
 
 
-def main(argv: list[str] | None = None) -> None:
+def dispatch_command(argv: list[str] | None = None) -> None:
     if argv is None:
         argv = sys.argv[1:]
 
@@ -1863,6 +1973,10 @@ def main(argv: list[str] | None = None) -> None:
         run_company_command(parse_company_args(argv[1:]))
         return
 
+    if argv[0] == "companies":
+        run_companies_command(parse_companies_args(argv[1:]))
+        return
+
     if argv and argv[0] == "skill":
         run_skill_command(parse_skill_args(argv[1:]))
         return
@@ -1874,6 +1988,22 @@ def main(argv: list[str] | None = None) -> None:
     fail(f"Unknown command: {argv[0]}", 2)
 
     parse_main_args(argv)
+
+
+def main(argv: list[str] | None = None) -> None:
+    try:
+        dispatch_command(argv)
+    except auth.AuthError as exc:
+        fail(str(exc), 2)
+    except companies.CompaniesError as exc:
+        fail(str(exc))
+    except RequestException as exc:
+        response = exc.response
+        if response is not None and response.status_code == 429:
+            fail("LinkedIn rate-limited this request (HTTP 429). Try again later.")
+        if response is not None:
+            fail(f"LinkedIn request failed (HTTP {response.status_code}). Try again later.")
+        fail("Could not reach LinkedIn. Check your connection and try again.")
 
 
 if __name__ == "__main__":

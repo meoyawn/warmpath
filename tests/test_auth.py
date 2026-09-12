@@ -391,7 +391,7 @@ def test_invalid_stored_cookie_is_rejected(field, value, reader, auth_path):
         auth.load_cookies()
 
 
-def test_expired_session_is_reported_and_rejected_without_reimport(reader, capsys, profile_fetch):
+def test_expired_session_is_reported_when_browser_also_has_no_valid_session(reader, capsys, profile_fetch):
     session = auth.import_browser("chrome")
     next(cookie for cookie in session.cookies if cookie.name == "li_at").expires = 1
     auth.save_auth(session)
@@ -406,12 +406,71 @@ def test_expired_session_is_reported_and_rejected_without_reimport(reader, capsy
     assert output.err == ""
 
     with pytest.raises(SystemExit) as api_error:
-        cli.build_api()
+        cli.main(["company", "Acme"])
 
     assert api_error.value.code == 2
     assert "warmpath auth import --browser chrome" in capsys.readouterr().err
-    reader.assert_not_called()
+    assert reader.call_count == 2
     profile_fetch.assert_not_called()
+
+
+def test_expired_saved_session_is_replaced_by_valid_browser_session(reader, capsys):
+    from copy import deepcopy
+
+    session = auth.import_browser("chrome")
+    session.cookies = deepcopy(session.cookies)
+    next(cookie for cookie in session.cookies if cookie.name == "li_at").expires = 1
+    auth.save_auth(session)
+    reader.reset_mock()
+
+    cli.main(["auth", "status"])
+
+    assert capsys.readouterr().out == "Logged in as Ada Lovelace\n"
+    assert not auth.load_auth().missing_cookies()
+    reader.assert_called_once_with(domain_name="linkedin.com")
+
+
+def test_import_keeps_linkedin_device_security_and_routing_cookies(reader, browser_cookies):
+    for name in ("bcookie", "bscookie", "lidc", "liap", "dfpfpt", "fptctx2"):
+        browser_cookies.set(name, f"value-for-{name}", domain=".linkedin.com", secure=True)
+
+    auth.import_browser("chrome")
+
+    saved = auth.load_cookies()
+    for name in ("bcookie", "bscookie", "lidc", "liap", "dfpfpt", "fptctx2"):
+        assert saved.get(name) == f"value-for-{name}"
+
+
+def test_import_persists_browser_user_agent(reader, monkeypatch):
+    monkeypatch.setattr(auth, "browser_user_agent", lambda browser: "Browser/152.0.0.0")
+
+    auth.import_browser("chrome")
+
+    assert auth.load_auth().user_agent == "Browser/152.0.0.0"
+
+
+def test_chrome_user_agent_uses_installed_major_version(monkeypatch):
+    import plistlib
+
+    monkeypatch.setattr(auth.sys, "platform", "darwin")
+    monkeypatch.setattr(Path, "read_bytes", lambda self: plistlib.dumps({"CFBundleShortVersionString": "152.0.7977.83"}))
+
+    agent = auth.browser_user_agent("chrome")
+
+    assert agent is not None
+    assert "Chrome/152.0.0.0" in agent
+    assert "Macintosh; Intel Mac OS X 10_15_7" in agent
+
+
+@pytest.mark.parametrize("value", ["Browser\r\nInjected: private-token", "", 123, ["Browser"]])
+def test_invalid_stored_user_agent_is_rejected(value, reader, auth_path):
+    auth.import_browser("chrome")
+    payload = json.loads(auth_path.read_text())
+    payload["user_agent"] = value
+    auth_path.write_text(json.dumps(payload))
+
+    with pytest.raises(auth.AuthError, match="saved LinkedIn session is invalid"):
+        auth.load_auth()
 
 
 @pytest.mark.parametrize("arguments", [[], ["import"], ["import", "--browser", "unknown"], ["login"]])

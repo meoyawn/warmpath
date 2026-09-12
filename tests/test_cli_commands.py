@@ -73,6 +73,7 @@ def test_top_level_help_shows_command_shapes() -> None:
     assert result.returncode == 0
     assert "human PROFILE_URL" in result.stdout
     assert "company COMPANY" in result.stdout
+    assert "companies [--urls]" in result.stdout
     assert "skill SKILL" in result.stdout
     assert "auth import --browser BROWSER" in result.stdout
     assert "auth status" in result.stdout
