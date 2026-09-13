@@ -682,6 +682,9 @@ def company_path_candidate(row: dict[str, Any], degree: int) -> dict[str, Any]:
         "degree": degree,
         "path_status": "unresolved",
         "target": target,
+        "mutual_connections": mutual_connections,
+        "mutual_count": mutual_count,
+        "mutuals_truncated": mutuals_truncated,
         "path": [
             {"role": "me"},
             {"role": "unknown_introducer"},
@@ -1190,6 +1193,23 @@ def find_company_path_candidates(
 
     candidates.sort(key=candidate_score)
     candidates = candidates[:limit]
+    for index, candidate in enumerate(candidates):
+        if candidate["degree"] != 2 or candidate_mutual_names(candidate):
+            continue
+        row = {
+            **candidate["target"],
+            "mutual_count": candidate.get("mutual_count"),
+            "mutuals_truncated": candidate.get("mutuals_truncated", False),
+            "_search_source": candidate["evidence"]["source"],
+        }
+        row = enrich_row_with_mutual_connections(
+            api,
+            row,
+            cache_dir,
+            refresh_cache,
+        )
+        candidates[index] = company_path_candidate(row, 2)
+
     direct_count = sum(1 for candidate in candidates if candidate["degree"] == 1)
     second_count = sum(1 for candidate in candidates if candidate["degree"] == 2)
     resolved_count = sum(

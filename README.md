@@ -36,6 +36,9 @@ uvx warmpath human https://www.linkedin.com/in/mitchellh/ --refresh-cache
 uvx warmpath company --help
 ```
 
+`company` prints mutual contacts for second-degree candidates, looking them up
+when LinkedIn's company search does not include their names.
+
 `companies` walks the complete 1st-degree connections list, looks up current
 employers, and deduplicates by company ID. It includes multiple current employers
 and keeps unlinked employer names; `--urls` prints only known LinkedIn company

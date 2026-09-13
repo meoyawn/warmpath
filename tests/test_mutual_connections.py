@@ -1,3 +1,8 @@
+from unittest.mock import Mock
+
+import pytest
+
+from warmpath import cli
 from warmpath.cli import (
     candidate_matches_filter,
     company_path_candidate,
@@ -104,6 +109,98 @@ def test_second_degree_candidate_renders_visible_mutual_connections() -> None:
     assert "Company URN:" not in rendered
     assert "URN:" not in rendered
     assert "unknown introducer" not in rendered
+
+
+@pytest.mark.parametrize("mutual_count", [None, 3])
+@pytest.mark.parametrize("found_mutual", [True, False])
+def test_company_looks_up_missing_mutual_contacts(
+    tmp_path, monkeypatch, mutual_count, found_mutual
+) -> None:
+    monkeypatch.setattr(cli, "resolve_company", Mock(return_value=(
+        {"name": "Acme", "urn_id": "company-id"}, []
+    )))
+    monkeypatch.setattr(cli, "fetch_company_people", Mock(side_effect=lambda *args: (
+        [] if args[3] == 1 else [{
+            "name": "Employee",
+            "urn_id": "employee-id",
+            "distance": "DISTANCE_2",
+            "mutual_count": mutual_count,
+            "mutuals_truncated": True,
+            "_search_source": "search.current_company",
+        }]
+    )))
+    api = Mock()
+    api.search.return_value = [{
+        "entityUrn": "urn:li:fsd_profile:contact-id",
+        "title": {"text": "Ada Lovelace"},
+        "navigationUrl": "https://www.linkedin.com/in/ada-lovelace/",
+        "entityCustomTrackingInfo": {"memberDistance": "DISTANCE_1"},
+    }] if found_mutual else []
+
+    result = cli.find_company_path_candidates(
+        api, "Acme", 2, 5, None, 5, tmp_path, False
+    )
+
+    api.search.assert_called_once_with({
+        "filters": (
+            "List((key:resultType,value:List(PEOPLE)),"
+            "(key:connectionOf,value:List(employee-id)),"
+            "(key:network,value:List(F)))"
+        )
+    }, limit=mutual_count or cli.DEFAULT_MAX_MUTUAL_CONNECTIONS)
+    candidate = result["candidates"][0]
+    rendered = render_company_path_result(result)
+    assert "Employee" in rendered
+    assert candidate["evidence"]["source"] == "search.current_company"
+    if found_mutual:
+        expected = "Mutuals (3): Ada Lovelace, +2 more" if mutual_count else "Mutuals (1): Ada Lovelace"
+        assert expected in rendered
+        assert candidate["path_status"] == "partially_resolved"
+        assert candidate["path"][1]["url"] == "https://www.linkedin.com/in/ada-lovelace/"
+    else:
+        assert "Mutuals" not in rendered
+        assert candidate["path_status"] == "unresolved"
+        assert candidate["mutual_count"] == mutual_count
+        assert candidate["mutuals_truncated"] is True
+
+    # Repeating a company search reuses its mutual-contact lookup.
+    assert cli.find_company_path_candidates(
+        api, "Acme", 2, 5, None, 5, tmp_path, False
+    ) == result
+    api.search.assert_called_once()
+
+
+def test_company_skips_mutual_lookups_for_direct_known_and_unprinted_candidates(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setattr(cli, "resolve_company", Mock(return_value=(
+        {"name": "Acme", "urn_id": "company-id"}, []
+    )))
+    direct = {"name": "Direct", "urn_id": "direct-id", "jobtitle": "Engineer"}
+    second_degree = [
+        {"name": "Filtered out", "urn_id": "filtered-id", "jobtitle": "Recruiter"},
+        {
+            "name": "Known mutual",
+            "urn_id": "known-id",
+            "jobtitle": "Engineer",
+            "mutual_connections": [{"name": "Ada Lovelace"}],
+        },
+        {"name": "Over limit", "urn_id": "limited-id", "jobtitle": "Engineer"},
+    ]
+    monkeypatch.setattr(cli, "fetch_company_people", Mock(
+        side_effect=lambda *args: [direct] if args[3] == 1 else second_degree
+    ))
+    api = Mock()
+
+    result = cli.find_company_path_candidates(
+        api, "Acme", 2, 2, "Engineer", 5, tmp_path, False
+    )
+
+    assert [candidate["target"]["name"] for candidate in result["candidates"]] == [
+        "Direct", "Known mutual"
+    ]
+    assert "Mutuals (1): Ada Lovelace" in render_company_path_result(result)
+    api.search.assert_not_called()
 
 
 def test_second_degree_candidate_without_mutuals_keeps_unresolved_status() -> None:
